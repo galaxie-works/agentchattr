@@ -22,6 +22,7 @@ from schedules import ScheduleStore, parse_schedule_spec
 from router import Router
 from agents import AgentTrigger
 from registry import RuntimeRegistry
+from relay import RelayRoutes
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 
@@ -40,6 +41,7 @@ agents: AgentTrigger | None = None
 registry: RuntimeRegistry | None = None
 session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
+relay_routes: RelayRoutes | None = None
 config: dict = {}
 ws_clients: set[WebSocket] = set()
 
@@ -230,7 +232,7 @@ def _install_security_middleware(token: str, cfg: dict):
 
 
 def configure(cfg: dict, session_token: str = ""):
-    global store, rules, summaries, jobs, schedules, router, agents, registry, session_store, session_engine, config
+    global store, rules, summaries, jobs, schedules, router, agents, registry, session_store, session_engine, relay_routes, config
     config = cfg
     # --- Security: store the session token and install middleware ---
     _install_security_middleware(session_token, cfg)
@@ -281,11 +283,13 @@ def configure(cfg: dict, session_token: str = ""):
     # Router starts with base agent names (backward compat for direct MCP users),
     # registry.on_change updates it dynamically when instances register/deregister
     agent_names = list(cfg.get("agents", {}).keys())
+    relay_routes = RelayRoutes(cfg.get("relays", {}), agent_names)
     router = Router(
         agent_names=agent_names,
         default_mention=cfg.get("routing", {}).get("default", "none"),
         max_hops=max_hops,
         online_checker=lambda: set(registry.get_active_names()) if registry else set(),
+        aliases=relay_routes.aliases,
     )
     agents = AgentTrigger(registry, data_dir=data_dir)
 
@@ -660,6 +664,17 @@ def _resolve_draft_lineage(text: str, channel: str) -> tuple[str, int]:
     return str(uuid.uuid4())[:8], 1
 
 
+def _relay_prompt_for_target(target: str, prompts: dict[str, str]) -> str:
+    """Resolve a base-agent relay prompt for a live, renamed instance."""
+    if target in prompts:
+        return prompts[target]
+    if registry:
+        instance = registry.get_instance(target)
+        if instance:
+            return prompts.get(instance.get("base", ""), "")
+    return ""
+
+
 async def _handle_new_message(msg: dict):
     """Broadcast message to web clients + check for @mention triggers."""
     # For broadcast slash commands, suppress the raw message — only the expanded
@@ -843,9 +858,15 @@ async def _handle_new_message(msg: dict):
             )
         return
 
-    # Build a readable message string for the wake prompt
+    # Build a readable message string for the wake prompt. A configured relay
+    # changes only the prompt delivered to its own agent; it never lets the
+    # server impersonate a provider or write to an external session itself.
     chat_msg = f"{sender}: {text}" if text else ""
     custom_prompt = text if is_hidden_session_request else ""
+    relay_prompts = {}
+    if relay_routes:
+        for route in relay_routes.routes_in(text):
+            relay_prompts[route.agent] = relay_routes.build_prompt(route, msg)
 
     # Session turn guard: if a session is active on this channel and the sender
     # is an agent, only allow triggering the agent whose turn it is.
@@ -866,7 +887,8 @@ async def _handle_new_message(msg: dict):
         if not mcp_bridge.is_online(target):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
         if agents.is_available(target):
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
+            prompt = _relay_prompt_for_target(target, relay_prompts) or custom_prompt
+            await agents.trigger(target, message=chat_msg, channel=channel, prompt=prompt)
 
 
 # --- broadcasting ---

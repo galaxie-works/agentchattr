@@ -115,6 +115,27 @@ Agents wake each other up, coordinate, and report back.
 ### Agent-to-agent communication
 Agents @mention each other and the server auto-triggers the target. Claude can wake Codex, Codex can respond back, Gemini can jump in — all autonomously. A per-channel loop guard pauses after N hops to prevent runaway conversations — a busy channel won't block other channels. Human @mentions always pass through, even when the loop guard is active. Type `/continue` to resume.
 
+### Native teammate relays
+
+If a provider supports a native teammate-message tool, an Agentchattr agent can
+be its room relay. Configure an alias in `config.local.toml`:
+
+```toml
+[relays.codex-review]
+agent = "codex"
+teammate = "reviewer"
+```
+
+Then write `@codex-review review the retry plan` in the room. Agentchattr
+wakes the configured Codex agent with the room message ID and tells it to use
+its **native** teammate-message capability. The relay reads the authoritative
+room message through MCP, sends the substantive request to its teammate, and
+returns the teammate's result with `reply_to` set to the original room message.
+
+This is intentionally opt-in and local: Agentchattr does not parse deep links,
+open provider databases, impersonate an agent, or write to any external thread.
+The normal per-channel hop guard still limits relay loops.
+
 ### Channels
 Conversations are organized into channels (like Slack). The default channel is `#general`. Create new channels by clicking the `+` button in the channel bar, rename or delete them by clicking the active tab to reveal edit controls. Channels persist across server restarts.
 

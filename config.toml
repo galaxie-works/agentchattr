@@ -98,6 +98,17 @@ temperature = 1.0
 default = "none"
 max_agent_hops = 4
 
+# Native teammate relays are optional. Add these to config.local.toml so
+# machine-specific teammate names never enter source control:
+#
+# [relays.codex-review]
+# agent = "codex"
+# teammate = "reviewer"
+#
+# Typing @codex-review in the room wakes the configured Codex relay. It then
+# uses its own native "message teammate" capability and returns the reply to
+# the room. Agentchattr never accesses provider session files or deep links.
+
 [mcp]
 http_port = 8200
 sse_port = 8201

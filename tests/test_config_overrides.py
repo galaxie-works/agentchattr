@@ -7,6 +7,7 @@ same env vars produce the same config regardless of entry point.
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -108,6 +109,24 @@ class ConfigOverrideTests(unittest.TestCase):
         # Agent definitions must be untouched by path/port overrides
         self.assertIn("claude", config["agents"])
         self.assertEqual(config["agents"]["claude"]["command"], "claude")
+
+    def test_local_relay_route_is_merged_without_overriding_committed_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[agents.codex]\ncommand = 'codex'\n\n[relays.committed]\nagent = 'codex'\nteammate = 'base'\n",
+                encoding="utf-8",
+            )
+            (root / "config.local.toml").write_text(
+                "[relays.review]\nagent = 'codex'\nteammate = 'reviewer'\n\n"
+                "[relays.committed]\nagent = 'codex'\nteammate = 'override'\n",
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["relays"]["review"]["teammate"], "reviewer")
+        self.assertEqual(config["relays"]["committed"]["teammate"], "base")
 
 
 class CliOverrideExtractionTests(unittest.TestCase):

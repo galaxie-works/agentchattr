@@ -5,8 +5,9 @@ import re
 
 class Router:
     def __init__(self, agent_names: list[str], default_mention: str = "both",
-                 max_hops: int = 4, online_checker=None):
+                 max_hops: int = 4, online_checker=None, aliases: dict[str, str] | None = None):
         self.agent_names = set(n.lower() for n in agent_names)
+        self.aliases = {name.lower(): target.lower() for name, target in (aliases or {}).items()}
         self.default_mention = default_mention
         self.max_hops = max_hops
         self._online_checker = online_checker  # callable() -> set of online agent names
@@ -25,7 +26,7 @@ class Router:
 
     def _build_pattern(self):
         # Sort longest-first so "gemini-2" is tried before "gemini"
-        names = [re.escape(n) for n in sorted(self.agent_names, key=len, reverse=True)]
+        names = [re.escape(n) for n in sorted(self.agent_names | set(self.aliases), key=len, reverse=True)]
         alternatives = "|".join(names + ["both", "all"])
         self._mention_re = re.compile(
             rf"@({alternatives})(?![\w-])", re.IGNORECASE
@@ -43,7 +44,7 @@ class Router:
                 else:
                     mentions.update(self.agent_names)
             else:
-                mentions.add(name)
+                mentions.add(self.aliases.get(name, name))
         return list(mentions)
 
     def _is_agent(self, sender: str) -> bool:

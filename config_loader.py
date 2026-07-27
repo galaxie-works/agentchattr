@@ -105,8 +105,8 @@ def load_config(root: Path | None = None) -> dict:
 
     config.local.toml is gitignored and intended for user-specific agents
     (e.g. local LLM endpoints) that shouldn't be committed.
-    Only the [agents] section is merged — local entries are added alongside
-    (not replacing) the agents defined in config.toml.
+    The [agents] and [relays] sections are merged — local entries are added
+    alongside (not replacing) entries defined in config.toml.
 
     AGENTCHATTR_* environment variables override values from config.toml
     (see module docstring for the list).
@@ -131,6 +131,16 @@ def load_config(root: Path | None = None) -> dict:
                 config_agents[name] = agent_cfg
             else:
                 print(f"  Warning: Ignoring local agent '{name}' (already defined in config.toml)")
+
+        # Relay aliases are local collaboration wiring. Like agents, a local
+        # config may add routes but never silently replace a committed route.
+        local_relays = local.get("relays", {})
+        config_relays = config.setdefault("relays", {})
+        for alias, relay_cfg in local_relays.items():
+            if alias not in config_relays:
+                config_relays[alias] = relay_cfg
+            else:
+                print(f"  Warning: Ignoring local relay '{alias}' (already defined in config.toml)")
 
     _apply_env_overrides(config)
 
