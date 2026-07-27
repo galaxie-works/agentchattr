@@ -172,7 +172,7 @@ const RoomSetup = (() => {
         state.selected = checked.map(name => {
             const previous = state.selected.find(member => member.name === name);
             const agent = state.data.available_agents.find(item => item.name === name);
-            return previous || { name, label: agent.label, provider: agent.provider, resumable: agent.resumable, defaultCwd: agent.cwd, mode: 'standard' };
+            return previous || { name, label: agent.label, provider: agent.provider, resumable: agent.resumable, cwd: agent.cwd || '', mode: 'standard' };
         });
     }
 

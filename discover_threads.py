@@ -141,8 +141,43 @@ def discover_claude_threads(claude_home: Path | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 # codex — ~/.codex/session_index.jsonl  (thread do Desktop, endereçada por thread_id)
 # ---------------------------------------------------------------------------
+def _codex_session_cwds(codex_home: Path) -> dict[str, str]:
+    """Read the owning workspace from each Codex rollout's session metadata.
+
+    ``session_index.jsonl`` intentionally contains only lightweight display
+    fields on recent Codex Desktop versions.  The authoritative ``cwd`` lives
+    in the first ``session_meta`` event of the matching rollout transcript.
+    """
+    sessions = codex_home / "sessions"
+    if not sessions.is_dir():
+        return {}
+
+    result: dict[str, str] = {}
+    try:
+        transcripts = sessions.rglob("*.jsonl")
+        for transcript in transcripts:
+            try:
+                with transcript.open("r", encoding="utf-8", errors="replace") as fh:
+                    for raw in fh:
+                        record = json.loads(raw)
+                        if record.get("type") != "session_meta":
+                            continue
+                        payload = record.get("payload") or {}
+                        thread_id = payload.get("id") or payload.get("session_id")
+                        cwd = payload.get("cwd")
+                        if isinstance(thread_id, str) and isinstance(cwd, str) and cwd:
+                            result[thread_id] = cwd
+                        break
+            except (OSError, ValueError, TypeError):
+                continue
+    except OSError:
+        return result
+    return result
+
+
 def discover_codex_threads(codex_home: Path | None = None) -> list[dict]:
-    idx = (codex_home or (Path.home() / ".codex")) / "session_index.jsonl"
+    root = codex_home or (Path.home() / ".codex")
+    idx = root / "session_index.jsonl"
     latest: dict[str, dict] = {}
     if not idx.is_file():
         return []
@@ -172,6 +207,9 @@ def discover_codex_threads(codex_home: Path | None = None) -> list[dict]:
                     }
     except Exception:
         pass
+    session_cwds = _codex_session_cwds(root)
+    for thread_id, thread in latest.items():
+        thread["cwd"] = thread.get("cwd") or session_cwds.get(thread_id)
     out = list(latest.values())
     out.sort(key=lambda t: t["last_activity"], reverse=True)
     return out
