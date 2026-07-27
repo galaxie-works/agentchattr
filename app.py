@@ -74,6 +74,23 @@ agent_hats: dict[str, str] = {}  # { agent_name: svg_string }
 room_workers: dict[str, subprocess.Popen] = {}
 
 
+def _room_worker_exists(kind: str, agent: str) -> bool:
+    """Detect a worker that outlived a server restart before launching another."""
+    needle = f"thread_relay.py {agent}" if kind == "thread_relay" else f"wrapper.py {agent}"
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=5,
+            )
+            return needle.lower() in result.stdout.lower()
+        result = subprocess.run(["ps", "-axo", "command="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+        return needle in result.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _hidden_console_startupinfo():
     """Keep a Windows console for key injection without showing its window."""
     if sys.platform != "win32":
@@ -226,6 +243,8 @@ def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) 
     """Start exactly one local worker selected by the room wizard."""
     existing = room_workers.get(agent)
     if existing and existing.poll() is None:
+        return
+    if _room_worker_exists(kind, agent):
         return
 
     root = Path(__file__).parent
