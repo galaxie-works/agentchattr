@@ -67,23 +67,26 @@ const RoomSetup = (() => {
         </div>`;
     }
 
-    function agentStep(member) {
+    function architectureStep(member) {
         const customAllowed = member.custom_supported;
         return `<h2>Configure ${escape(member.label)}</h2>
-            <p>Choose how ${escape(member.label)} should participate in this room.</p>
+            <p>Choose the architecture for ${escape(member.label)} in this room.</p>
             <div class="room-mode-options">
-                <label class="room-mode ${member.mode === 'standard' ? 'selected' : ''}">
-                    <input type="radio" name="mode" value="standard" ${member.mode === 'standard' ? 'checked' : ''}>
-                    <strong>Managed by AgentChattr</strong>
-                    <span>Starts a new provider session through the app wrapper, with MCP injection and its project tools.</span>
-                </label>
-                <label class="room-mode ${member.mode === 'custom' ? 'selected' : ''} ${customAllowed ? '' : 'disabled'}">
-                    <input type="radio" name="mode" value="custom" ${member.mode === 'custom' ? 'checked' : ''} ${customAllowed ? '' : 'disabled'}>
-                    <strong>Use custom architecture</strong>
-                    <span>${customAllowed ? 'Link one explicit existing thread or session.' : 'Thread/session linking is currently available for Codex and Claude.'}</span>
-                </label>
-            </div>
-            ${member.mode === 'custom' && customAllowed ? customFields(member) : ''}`;
+                <button class="room-mode-card" data-mode="standard">
+                    <span><strong>Managed by AgentChattr</strong><small>Starts a new provider session through the app wrapper, with MCP injection and its project tools.</small></span>
+                    <b aria-hidden="true">›</b>
+                </button>
+                <button class="room-mode-card ${customAllowed ? '' : 'disabled'}" data-mode="custom" ${customAllowed ? '' : 'disabled'}>
+                    <span><strong>Use custom architecture</strong><small>${customAllowed ? 'Link one explicit existing thread or session in the next step.' : 'Thread/session linking is currently available for Codex and Claude.'}</small></span>
+                    <b aria-hidden="true">›</b>
+                </button>
+            </div>`;
+    }
+
+    function linkStep(member) {
+        return `<h2>Link ${escape(member.label)}</h2>
+            <p>Connect the conversation that should receive room messages.</p>
+            ${customFields(member)}`;
     }
 
     function reviewStep() {
@@ -94,23 +97,41 @@ const RoomSetup = (() => {
             <ul class="room-review-list">${members}</ul>`;
     }
 
+    function stages() {
+        const result = [{ kind: 'invite' }];
+        state.selected.forEach(member => {
+            result.push({ kind: 'architecture', member });
+            if (member.mode === 'custom') result.push({ kind: 'link', member });
+        });
+        result.push({ kind: 'review' });
+        return result;
+    }
+
+    function currentStage() {
+        return stages()[state.step] || { kind: 'review' };
+    }
+
     function currentContent() {
-        if (state.step === 0) return inviteStep();
-        const agentIndex = state.step - 1;
-        if (agentIndex < state.selected.length) return agentStep(state.selected[agentIndex]);
+        const stage = currentStage();
+        if (stage.kind === 'invite') return inviteStep();
+        if (stage.kind === 'architecture') return architectureStep(stage.member);
+        if (stage.kind === 'link') return linkStep(stage.member);
         return reviewStep();
     }
 
     function render() {
-        const total = state.selected.length + 2;
-        const isInvite = state.step === 0;
-        const isReview = state.step === total - 1;
+        const flow = stages();
+        const stage = currentStage();
+        const total = flow.length;
+        const isInvite = stage.kind === 'invite';
+        const isReview = stage.kind === 'review';
+        const isArchitecture = stage.kind === 'architecture';
         wizard.innerHTML = `<div class="room-stepper"><span>Step ${state.step + 1} of ${total}</span><div>${Array.from({ length: total }, (_, i) => `<i class="${i <= state.step ? 'active' : ''}"></i>`).join('')}</div></div>
             <div class="room-step-content">${currentContent()}</div>
             <div class="room-wizard-actions">
                 <button class="room-secondary-button" id="room-back" ${isInvite ? 'disabled' : ''}>Back</button>
                 <span class="room-error" id="room-wizard-error"></span>
-                <button class="room-primary-button" id="room-next">${isReview ? 'Create room' : 'Continue'}</button>
+                ${isArchitecture ? '' : `<button class="room-primary-button" id="room-next">${isReview ? 'Create room' : 'Continue'}</button>`}
             </div>`;
         bind();
     }
@@ -125,30 +146,28 @@ const RoomSetup = (() => {
     }
 
     function saveCurrentStep() {
-        if (state.step === 0) { updateInvite(); return; }
-        const index = state.step - 1;
-        if (index < state.selected.length) {
-            const member = state.selected[index];
-            const selectedMode = wizard.querySelector('input[name="mode"]:checked');
-            member.mode = selectedMode ? selectedMode.value : 'standard';
-            if (member.mode === 'custom') {
-                member.target = wizard.querySelector('.room-target')?.value.trim() || '';
-                member.cwd = wizard.querySelector('.room-cwd')?.value.trim() || '';
-                member.confirm = Boolean(wizard.querySelector('.room-claude-confirm')?.checked);
-            }
+        const stage = currentStage();
+        if (stage.kind === 'invite') { updateInvite(); return; }
+        if (stage.kind === 'link') {
+            const member = stage.member;
+            member.target = wizard.querySelector('.room-target')?.value.trim() || '';
+            member.cwd = wizard.querySelector('.room-cwd')?.value.trim() || '';
+            member.confirm = Boolean(wizard.querySelector('.room-claude-confirm')?.checked);
             return;
         }
-        state.title = wizard.querySelector('#room-name').value.trim();
-        state.description = wizard.querySelector('#room-description').value.trim();
+        if (stage.kind === 'review') {
+            state.title = wizard.querySelector('#room-name').value.trim();
+            state.description = wizard.querySelector('#room-description').value.trim();
+        }
     }
 
     function validateCurrentStep() {
-        if (state.step === 0 && state.selected.length === 0) return 'Choose at least one colleague.';
-        const index = state.step - 1;
-        if (index >= 0 && index < state.selected.length) {
-            const member = state.selected[index];
-            if (member.mode === 'custom' && (!member.target || !member.cwd)) return 'A target and working directory are required.';
-            if (member.provider === 'claude' && member.mode === 'custom' && !member.confirm) return 'Confirm that the current Claude session will be closed first.';
+        const stage = currentStage();
+        if (stage.kind === 'invite' && state.selected.length === 0) return 'Choose at least one colleague.';
+        if (stage.kind === 'link') {
+            const member = stage.member;
+            if (!member.target || !member.cwd) return 'A target and working directory are required.';
+            if (member.provider === 'claude' && !member.confirm) return 'Confirm that the current Claude session will be closed first.';
         }
         return '';
     }
@@ -174,13 +193,18 @@ const RoomSetup = (() => {
 
     function bind() {
         wizard.querySelectorAll('[data-agent-name]').forEach(input => input.addEventListener('change', () => { updateInvite(); render(); }));
-        wizard.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => { saveCurrentStep(); render(); }));
+        wizard.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
+            const stage = currentStage();
+            stage.member.mode = button.dataset.mode;
+            state.step += 1;
+            render();
+        }));
         wizard.querySelector('#room-back').addEventListener('click', () => { saveCurrentStep(); state.step = Math.max(0, state.step - 1); render(); });
-        wizard.querySelector('#room-next').addEventListener('click', async () => {
+        wizard.querySelector('#room-next')?.addEventListener('click', async () => {
             saveCurrentStep();
             const error = validateCurrentStep();
             if (error) { wizard.querySelector('#room-wizard-error').textContent = error; return; }
-            if (state.step === state.selected.length + 1) { await submit(); return; }
+            if (currentStage().kind === 'review') { await submit(); return; }
             state.step += 1; render();
         });
     }
