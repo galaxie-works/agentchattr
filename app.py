@@ -9,6 +9,7 @@ import sys
 import threading
 import uuid
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
@@ -1745,6 +1746,74 @@ async def get_room_setup():
     })
 
 
+def _current_room_members() -> list[dict]:
+    members = []
+    for linked in room_settings.get("linked_threads", []):
+        if not isinstance(linked, dict):
+            continue
+        provider = str(linked.get("provider", "")).lower()
+        if provider in {"claude", "codex"}:
+            members.append({"provider": provider, "id": str(linked.get("id", "")), "cwd": str(linked.get("cwd", ""))})
+    return members
+
+
+@app.get("/api/rooms")
+async def get_rooms():
+    """Expose saved rooms to the onboarding chat-board picker."""
+    if not room_settings.get("setup_complete"):
+        return JSONResponse([])
+    settings_path = _settings_path()
+    members = _current_room_members()
+    return JSONResponse([{
+        "id": "current",
+        "title": room_settings.get("title", "Untitled room"),
+        "description": room_settings.get("description", ""),
+        "members": [member["provider"].title() for member in members],
+        "member_count": len(members),
+        "last_activity": time.strftime("%Y-%m-%d %H:%M", time.localtime(settings_path.stat().st_mtime)) if settings_path.exists() else "saved room",
+    }])
+
+
+@app.post("/api/rooms/{room_id}/continue")
+async def continue_room(room_id: str, request: Request):
+    """Wake this saved room's configured workers and report unavailable members."""
+    if room_id != "current" or not room_settings.get("setup_complete"):
+        return JSONResponse({"error": "saved room not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    members = _current_room_members()
+    active_targets = {member["id"] for member in members if member["provider"] == "claude"} & set(active_sessions())
+    if active_targets:
+        if body.get("terminate_active_claude_sessions") is not True:
+            return JSONResponse({"error": "A selected Claude session is still open.", "requires_session_termination": True}, status_code=409)
+        if terminate_sessions(active_targets):
+            return JSONResponse({"error": "AgentChattr could not close the selected Claude Code session."}, status_code=409)
+
+    started, unavailable = [], []
+    for member in members:
+        provider, cwd = member["provider"], Path(member["cwd"])
+        alias = f"{provider}-room"
+        if not cwd.is_dir():
+            unavailable.append(provider)
+            continue
+        try:
+            if provider == "codex" and alias in config.get("thread_relays", {}):
+                _start_room_worker("thread_relay", alias)
+            elif provider == "claude" and alias in config.get("agents", {}):
+                _start_room_worker("wrapper", alias, ("--resume", member["id"]))
+            else:
+                unavailable.append(provider)
+                continue
+            started.append(alias)
+        except OSError:
+            unavailable.append(provider)
+    for provider in unavailable:
+        store.add("system", f"{provider.title()} is gone for good.", msg_type="system", channel="general")
+    return JSONResponse({"ok": True, "started": started, "unavailable": unavailable})
+
+
 @app.post("/api/room-setup")
 async def create_room(request: Request):
     """Persist the wizard selection, register its aliases, and launch workers."""
@@ -2447,6 +2516,9 @@ async def register_agent(request: Request):
     import mcp_bridge
     with mcp_bridge._presence_lock:
         mcp_bridge._presence[result["name"]] = __import__("time").time()
+    # A registered wrapper is an actual room arrival. The chat UI already has
+    # a dedicated join/leave renderer; persist the matching event here.
+    store.add(result["name"], "", msg_type="join", channel=_agent_last_channel.get(result["name"], "general"))
     # If slot 1 was renamed (e.g. "claude" → "claude-1"), migrate state
     renamed = result.pop("_renamed_slot1", None)
     if renamed:

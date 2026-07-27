@@ -4,8 +4,10 @@ const RoomSetup = (() => {
     const root = document.getElementById('room-onboarding');
     const landing = root.querySelector('.room-landing');
     const wizard = root.querySelector('.room-wizard');
+    const board = root.querySelector('.room-board');
     const createButton = document.getElementById('create-room-button');
-    const state = { data: null, selected: [], step: 0, active: true, threads: {}, terminateActiveClaudeSessions: false };
+    const boardButton = document.getElementById('go-to-board-button');
+    const state = { data: null, selected: [], step: 0, active: true, threads: {}, terminateActiveClaudeSessions: false, createdThisVisit: false, rooms: [], selectedRoom: null, terminateBoardClaude: false };
 
     const escape = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -19,13 +21,15 @@ const RoomSetup = (() => {
 
     function applySettings(settings) {
         const created = Boolean(settings && settings.setup_complete);
-        state.active = !created;
-        root.classList.toggle('active', !created);
-        if (created) root.classList.add('hidden');
+        state.active = !state.createdThisVisit;
+        root.classList.toggle('active', !state.createdThisVisit);
+        root.classList.toggle('hidden', state.createdThisVisit);
+        if (created) boardButton.classList.remove('hidden');
     }
 
     function openWizard() {
         landing.classList.add('hidden');
+        board.classList.add('hidden');
         wizard.classList.remove('hidden');
         if (!state.data) {
             wizard.innerHTML = '<p class="room-loading">Loading colleagues…</p>';
@@ -33,6 +37,42 @@ const RoomSetup = (() => {
         } else {
             render();
         }
+    }
+
+    async function openBoard() {
+        landing.classList.add('hidden');
+        wizard.classList.add('hidden');
+        board.classList.remove('hidden');
+        board.innerHTML = '<p class="room-loading">Loading chat rooms…</p>';
+        try {
+            const response = await fetch('/api/rooms', { headers: { 'X-Session-Token': SESSION_TOKEN } });
+            if (!response.ok) throw new Error('Could not load chat rooms.');
+            state.rooms = await response.json();
+            state.selectedRoom = state.rooms[0] || null;
+            renderBoard();
+        } catch (error) { board.innerHTML = `<p class="room-error">${escape(error.message)}</p>`; }
+    }
+
+    function renderBoard() {
+        const selected = state.selectedRoom;
+        const rooms = state.rooms.map(room => `<button type="button" class="room-history-item ${selected?.id === room.id ? 'selected' : ''}" data-room-id="${escape(room.id)}"><strong>${escape(room.title)}</strong><small>${escape(room.member_count)} colleagues · ${escape(room.last_activity || 'saved room')}</small></button>`).join('') || '<small>No saved rooms yet.</small>';
+        const members = selected?.members?.length ? selected.members.map(escape).join(', ') : 'No configured colleagues';
+        board.innerHTML = `<div class="room-board-layout"><aside class="room-board-sidebar"><h3>Chat history</h3>${rooms}<button class="room-secondary-button" id="board-back">Back</button></aside><div class="room-board-detail">${selected ? `<h2>${escape(selected.title)}</h2><p>${escape(selected.description || 'No description')}</p><div class="room-board-members">${members}</div><div class="room-board-actions"><button class="room-primary-button" id="continue-room">${state.terminateBoardClaude ? 'Close session and continue' : 'Continue room'}</button><span class="room-board-error" id="board-error"></span></div>` : '<h2>Select a room</h2>'}</div></div>`;
+        board.querySelectorAll('[data-room-id]').forEach(button => button.addEventListener('click', () => { state.selectedRoom = state.rooms.find(room => room.id === button.dataset.roomId); state.terminateBoardClaude = false; renderBoard(); }));
+        board.querySelector('#board-back')?.addEventListener('click', () => { board.classList.add('hidden'); landing.classList.remove('hidden'); });
+        board.querySelector('#continue-room')?.addEventListener('click', continueRoom);
+    }
+
+    async function continueRoom() {
+        const button = board.querySelector('#continue-room'); const error = board.querySelector('#board-error');
+        button.disabled = true; error.textContent = 'Waking up colleagues…';
+        try {
+            const response = await fetch(`/api/rooms/${encodeURIComponent(state.selectedRoom.id)}/continue`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN }, body: JSON.stringify({ terminate_active_claude_sessions: state.terminateBoardClaude }) });
+            const payload = await response.json();
+            if (payload.requires_session_termination) { state.terminateBoardClaude = true; error.textContent = 'A Claude session is open. Continue again to close it and wake the room.'; button.textContent = 'Close session and continue'; button.disabled = false; return; }
+            if (!response.ok) throw new Error(payload.error || 'Could not continue room.');
+            state.createdThisVisit = true; root.classList.remove('active'); root.classList.add('hidden');
+        } catch (err) { error.textContent = err.message || 'Could not continue room.'; button.disabled = false; }
     }
 
     function inviteStep() {
@@ -218,7 +258,7 @@ const RoomSetup = (() => {
                 return;
             }
             if (!response.ok) throw new Error(payload.error || 'Could not create room.');
-            applySettings({ setup_complete: true });
+            state.createdThisVisit = true; applySettings({ setup_complete: true });
         } catch (err) {
             error.textContent = err.message || 'Could not create room.';
             button.disabled = false;
@@ -253,5 +293,6 @@ const RoomSetup = (() => {
     }
 
     createButton.addEventListener('click', openWizard);
+    boardButton.addEventListener('click', openBoard);
     return { applySettings, load };
 })();
