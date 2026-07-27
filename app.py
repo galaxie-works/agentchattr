@@ -72,6 +72,16 @@ agent_hats: dict[str, str] = {}  # { agent_name: svg_string }
 room_workers: dict[str, subprocess.Popen] = {}
 
 
+def _hidden_console_startupinfo():
+    """Keep a Windows console for key injection without showing its window."""
+    if sys.platform != "win32":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return startupinfo
+
+
 def _hats_path() -> Path:
     data_dir = config.get("server", {}).get("data_dir", "./data")
     return Path(data_dir) / "hats.json"
@@ -228,12 +238,18 @@ def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) 
             )
         return
 
-    # Wrappers deliberately get their own visible console: their provider is
-    # interactive and Windows console-input injection needs that live process.
+    # The wrapper needs a real console for Windows console-input injection, but
+    # it does not need to be visible. CREATE_NEW_CONSOLE + SW_HIDE preserves
+    # that console while keeping an automatically started room unobtrusive.
     command = [sys.executable, "wrapper.py", agent, *extra_args]
-    room_workers[agent] = subprocess.Popen(
-        command, cwd=root, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-    )
+    stdout_path = _settings_path().parent / f"{agent}-wrapper.stdout.log"
+    stderr_path = _settings_path().parent / f"{agent}-wrapper.stderr.log"
+    with open(stdout_path, "a", encoding="utf-8") as stdout, open(stderr_path, "a", encoding="utf-8") as stderr:
+        room_workers[agent] = subprocess.Popen(
+            command, cwd=root, stdout=stdout, stderr=stderr,
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            startupinfo=_hidden_console_startupinfo(),
+        )
 
 
 def _extract_agent_token(request: Request) -> str:
