@@ -1693,23 +1693,38 @@ async def get_settings():
     return room_settings
 
 
+@app.get("/api/providers")
+async def get_providers():
+    """Provider capability manifest used to drive the room wizard."""
+    from discover_threads import providers
+    return JSONResponse(providers())
+
+
+@app.get("/api/threads")
+async def get_threads(provider: str = ""):
+    """List addressable local conversations for one resumable provider."""
+    from discover_threads import PROVIDERS, discover
+
+    name = provider.strip().lower()
+    spec = PROVIDERS.get(name)
+    if not spec:
+        return JSONResponse({"error": "unknown provider"}, status_code=404)
+    if not spec["resumable"]:
+        return JSONResponse([])
+    # Wrapper-created sessions are intentionally not valid custom targets.
+    threads = [thread for thread in discover(name) if not thread.get("relay_bot")]
+    return JSONResponse(threads)
+
+
 @app.get("/api/room-setup")
 async def get_room_setup():
-    """Data for the first-run room wizard; no session discovery is performed."""
+    """First-run room data; thread discovery happens lazily per provider."""
     from room_setup import available_agents
 
-    targets: dict[str, list[dict]] = {}
-    for name, relay in _public_thread_relays().items():
-        provider = relay.get("provider")
-        if provider in {"codex", "claude"} and relay.get("target"):
-            targets.setdefault(provider, []).append({
-                "value": relay["target"], "label": relay.get("label") or name,
-            })
     return JSONResponse({
         "created": bool(room_settings.get("setup_complete")),
         "room": {"title": room_settings.get("title", ""), "description": room_settings.get("description", "")},
         "available_agents": available_agents(config),
-        "known_targets": targets,
     })
 
 
@@ -1768,6 +1783,11 @@ async def create_room(request: Request):
 
     room_settings["title"] = plan.title
     room_settings["description"] = plan.description
+    room_settings["linked_threads"] = [
+        {"provider": member["provider"], "id": member["target"], "cwd": member["cwd"]}
+        for member in body.get("agents", [])
+        if isinstance(member, dict) and member.get("mode") == "custom"
+    ]
     room_settings["setup_complete"] = True
     _save_settings()
     await broadcast_settings()

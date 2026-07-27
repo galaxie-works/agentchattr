@@ -27,7 +27,10 @@ class RoomSetupPlanTests(unittest.TestCase):
 
     def test_exposes_base_agents_and_not_runtime_relays(self):
         self.config["agents"]["codex-main"] = {"type": "thread_relay"}
-        self.assertEqual([agent["name"] for agent in available_agents(self.config)], ["claude", "codex", "gemini"])
+        agents = available_agents(self.config)
+        self.assertEqual([agent["name"] for agent in agents], ["claude", "codex", "gemini"])
+        self.assertTrue(next(agent for agent in agents if agent["name"] == "claude")["resumable"])
+        self.assertFalse(next(agent for agent in agents if agent["name"] == "gemini")["resumable"])
 
     def test_builds_codex_thread_relay_and_resumed_claude_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:

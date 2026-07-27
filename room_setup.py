@@ -30,23 +30,24 @@ class RoomPlan:
 
 
 def available_agents(config: dict) -> list[dict]:
-    """Expose selectable base providers, never runtime relay aliases."""
+    """Expose provider capabilities that have a configured app-level runner."""
+    from discover_threads import providers
+
     result = []
-    for name, cfg in config.get("agents", {}).items():
+    for capability in providers():
+        name = capability["name"]
+        cfg = config.get("agents", {}).get(name)
         if not isinstance(cfg, dict) or cfg.get("type") == "thread_relay":
-            continue
-        provider = str(cfg.get("provider", name)).strip().lower()
-        # Project members and prior room aliases inherit a provider but are
-        # already configured instances, not another colleague to invite.
-        if name != provider:
             continue
         result.append({
             "name": name,
-            "provider": provider,
-            "label": str(cfg.get("label", name.title())),
+            "provider": name,
+            "label": capability["label"],
             "color": str(cfg.get("color", "#888888")),
             "cwd": str(cfg.get("cwd", ".")),
-            "custom_supported": provider in {"codex", "claude"},
+            "resumable": bool(capability["resumable"]),
+            "address": capability["address"],
+            "store_hint": capability["store_hint"],
         })
     return sorted(result, key=lambda item: item["label"].lower())
 
@@ -86,8 +87,8 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
         if mode == "standard":
             launches.append(LaunchSpec("wrapper", name))
             continue
-        if mode != "custom" or not base["custom_supported"]:
-            raise RoomSetupError(f"Custom architecture is currently available only for Codex and Claude ({base['label']}).")
+        if mode != "custom" or not base["resumable"]:
+            raise RoomSetupError(f"{base['label']} does not support linking an existing conversation.")
 
         provider = base["provider"]
         try:

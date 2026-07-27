@@ -5,7 +5,7 @@ const RoomSetup = (() => {
     const landing = root.querySelector('.room-landing');
     const wizard = root.querySelector('.room-wizard');
     const createButton = document.getElementById('create-room-button');
-    const state = { data: null, selected: [], step: 0, active: true };
+    const state = { data: null, selected: [], step: 0, active: true, threads: {} };
 
     const escape = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -48,27 +48,38 @@ const RoomSetup = (() => {
             <div class="room-agent-grid">${cards}</div>`;
     }
 
+    function formatActivity(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? 'Unknown activity' : date.toLocaleString();
+    }
+
     function customFields(member) {
         const provider = member.provider;
-        const known = (state.data.known_targets[provider] || []).map(item =>
-            `<option value="${escape(item.value)}">${escape(item.label)}</option>`
-        ).join('');
-        const listId = `known-${provider}-targets`;
-        const targetHint = provider === 'codex'
-            ? 'A Codex thread ID or saved thread name.'
-            : 'A Claude Code session UUID. The wrapper will resume it with MCP injection.';
+        const threads = state.threads[provider];
         const claudeWarning = provider === 'claude' ? `<label class="room-confirm"><input type="checkbox" class="room-claude-confirm" ${member.confirm ? 'checked' : ''}> I will close the currently open Claude Code session before this room starts it.</label>` : '';
+        if (!Array.isArray(threads)) {
+            return `<div class="room-thread-loading">Discovering local ${escape(member.label)} conversations…</div>`;
+        }
+        if (threads.length === 0) {
+            return `<div class="room-thread-empty">No resumable ${escape(member.label)} conversations were found. Go back and use the managed app session instead.</div>`;
+        }
+        const cards = threads.map((thread, index) => {
+            const selected = member.target === thread.id;
+            const context = [thread.cwd, thread.git_branch ? `branch ${thread.git_branch}` : ''].filter(Boolean).join(' · ');
+            return `<button type="button" class="room-thread-option ${selected ? 'selected' : ''}" data-thread-index="${index}">
+                <span><strong>${escape(thread.name || thread.id)}</strong><small>${escape(formatActivity(thread.last_activity))}${context ? ` · ${escape(context)}` : ''}</small></span>
+                <b aria-hidden="true">›</b>
+            </button>`;
+        }).join('');
         return `<div class="room-custom-fields">
-            <label>Thread or session target<input class="room-target" list="${listId}" value="${escape(member.target || '')}" placeholder="${provider === 'codex' ? 'Thread ID or name' : 'Session UUID'}"></label>
-            <datalist id="${listId}">${known}</datalist>
-            <small>${targetHint}</small>
-            <label>Working directory<input class="room-cwd" value="${escape(member.cwd || member.defaultCwd || '')}" placeholder="C:\\project"></label>
+            <div class="room-thread-list">${cards}</div>
+            ${member.target ? `<label>Working directory<input class="room-cwd" value="${escape(member.cwd || '')}" placeholder="C:\\project"></label>` : ''}
             ${claudeWarning}
         </div>`;
     }
 
     function architectureStep(member) {
-        const customAllowed = member.custom_supported;
+        const customAllowed = member.resumable;
         return `<h2>Configure ${escape(member.label)}</h2>
             <p>Choose the architecture for ${escape(member.label)} in this room.</p>
             <div class="room-mode-options">
@@ -76,10 +87,10 @@ const RoomSetup = (() => {
                     <span><strong>Managed by AgentChattr</strong><small>Starts a new provider session through the app wrapper, with MCP injection and its project tools.</small></span>
                     <b aria-hidden="true">›</b>
                 </button>
-                <button class="room-mode-card ${customAllowed ? '' : 'disabled'}" data-mode="custom" ${customAllowed ? '' : 'disabled'}>
+                ${customAllowed ? `<button class="room-mode-card" data-mode="custom">
                     <span><strong>Use custom architecture</strong><small>${customAllowed ? 'Link one explicit existing thread or session in the next step.' : 'Thread/session linking is currently available for Codex and Claude.'}</small></span>
                     <b aria-hidden="true">›</b>
-                </button>
+                </button>` : ''}
             </div>`;
     }
 
@@ -87,6 +98,20 @@ const RoomSetup = (() => {
         return `<h2>Link ${escape(member.label)}</h2>
             <p>Connect the conversation that should receive room messages.</p>
             ${customFields(member)}`;
+    }
+
+    async function loadThreads(provider) {
+        if (state.threads[provider] !== undefined) return;
+        state.threads[provider] = null;
+        try {
+            const response = await fetch(`/api/threads?provider=${encodeURIComponent(provider)}`, { headers: { 'X-Session-Token': SESSION_TOKEN } });
+            if (!response.ok) throw new Error('Thread discovery failed.');
+            const threads = await response.json();
+            state.threads[provider] = Array.isArray(threads) ? threads.filter(thread => !thread.relay_bot) : [];
+        } catch {
+            state.threads[provider] = [];
+        }
+        render();
     }
 
     function reviewStep() {
@@ -134,6 +159,7 @@ const RoomSetup = (() => {
                 ${isArchitecture ? '' : `<button class="room-primary-button" id="room-next">${isReview ? 'Create room' : 'Continue'}</button>`}
             </div>`;
         bind();
+        if (stage.kind === 'link') loadThreads(stage.member.provider);
     }
 
     function updateInvite() {
@@ -141,7 +167,7 @@ const RoomSetup = (() => {
         state.selected = checked.map(name => {
             const previous = state.selected.find(member => member.name === name);
             const agent = state.data.available_agents.find(item => item.name === name);
-            return previous || { name, label: agent.label, provider: agent.provider, custom_supported: agent.custom_supported, defaultCwd: agent.cwd, mode: 'standard' };
+            return previous || { name, label: agent.label, provider: agent.provider, resumable: agent.resumable, defaultCwd: agent.cwd, mode: 'standard' };
         });
     }
 
@@ -150,7 +176,6 @@ const RoomSetup = (() => {
         if (stage.kind === 'invite') { updateInvite(); return; }
         if (stage.kind === 'link') {
             const member = stage.member;
-            member.target = wizard.querySelector('.room-target')?.value.trim() || '';
             member.cwd = wizard.querySelector('.room-cwd')?.value.trim() || '';
             member.confirm = Boolean(wizard.querySelector('.room-claude-confirm')?.checked);
             return;
@@ -197,6 +222,13 @@ const RoomSetup = (() => {
             const stage = currentStage();
             stage.member.mode = button.dataset.mode;
             state.step += 1;
+            render();
+        }));
+        wizard.querySelectorAll('[data-thread-index]').forEach(button => button.addEventListener('click', () => {
+            const stage = currentStage();
+            const thread = state.threads[stage.member.provider][Number(button.dataset.threadIndex)];
+            stage.member.target = thread.id;
+            stage.member.cwd = thread.cwd || stage.member.cwd || '';
             render();
         }));
         wizard.querySelector('#room-back').addEventListener('click', () => { saveCurrentStep(); state.step = Math.max(0, state.step - 1); render(); });
