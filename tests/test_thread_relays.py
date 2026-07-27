@@ -50,9 +50,9 @@ class ThreadRelayConfigTests(unittest.TestCase):
 
 class ThreadRelayWorkerTests(unittest.TestCase):
     def test_turn_prompt_preserves_correlation_and_untrusted_text(self):
-        prompt = build_turn_prompt({"channel": "general", "message_id": 42, "text": "@codex-main hi"})
-        self.assertIn("#general, message #42", prompt)
-        self.assertIn("@codex-main hi", prompt)
+        prompt = build_turn_prompt({"channel": "general", "message_id": 42, "text": "@codex-main\nhi"})
+        self.assertTrue(prompt.startswith("ROOM MESSAGE #42 in #general: @codex-main hi."))
+        self.assertNotIn("\n", prompt)
 
     def test_extracts_only_the_last_completed_agent_message(self):
         stdout = "\n".join([
@@ -82,6 +82,7 @@ class ThreadRelayWorkerTests(unittest.TestCase):
             "C:/bin/codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "resume",
         ])
         self.assertEqual(args[7], THREAD_ID)
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
 
 
 if __name__ == "__main__":

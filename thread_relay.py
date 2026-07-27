@@ -31,16 +31,18 @@ def build_turn_prompt(entry: dict) -> str:
     """Build an explicit, correlated relay turn without inventing a sender."""
     channel = str(entry.get("channel", "general"))
     message_id = entry.get("message_id", "unknown")
-    text = str(entry.get("text", "")).strip()
+    # ``codex exec resume`` uses the first physical line of its prompt for a
+    # resumed turn on Windows. Preserve all user content while keeping the
+    # relay input to one line.
+    text = " ".join(str(entry.get("text", "")).split())
     return (
+        f"ROOM MESSAGE #{message_id} in #{channel}: {text}. "
         "You are responding through an AgentChattr room relay. "
-        f"The source room is #{channel}, message #{message_id}. "
         "Answer the substantive request below directly and concisely. Your final "
         "answer will be posted verbatim back to the room as a reply. Do not claim "
         "to have sent a room message yourself, do not change relay configuration, "
         "and do not use tools unless the request genuinely needs them. "
-        "If you need another room member, include its exact @mention in your final answer.\n\n"
-        f"ROOM MESSAGE:\n{text}"
+        "If you need another room member, include its exact @mention in your final answer."
     )
 
 
@@ -83,6 +85,8 @@ def run_turn(relay, prompt: str) -> tuple[str, str]:
             cwd=relay.cwd,
             env=os.environ.copy(),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=relay.timeout_seconds,
         )
