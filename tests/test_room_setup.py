@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app import _active_claude_session_ids
 from room_setup import RoomSetupError, available_agents, build_room_plan
 
 
@@ -55,6 +56,17 @@ class RoomSetupPlanTests(unittest.TestCase):
                 build_room_plan(self.config, {
                     "agents": [{"name": "claude", "mode": "custom", "target": "not-a-session", "cwd": tmp}],
                 }, Path(tmp))
+
+    def test_reads_only_live_claude_session_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions = Path(tmp) / "sessions"
+            sessions.mkdir()
+            (sessions / "101.json").write_text('{"sessionId":"live-session","pid":101}', encoding="utf-8")
+            (sessions / "102.json").write_text('{"sessionId":"stale-session","pid":102}', encoding="utf-8")
+
+            active = _active_claude_session_ids(Path(tmp), pid_is_running=lambda pid: pid == 101)
+
+        self.assertEqual(active, {"live-session"})
 
 
 if __name__ == "__main__":

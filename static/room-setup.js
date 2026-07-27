@@ -61,7 +61,6 @@ const RoomSetup = (() => {
     function customFields(member) {
         const provider = member.provider;
         const threads = state.threads[provider];
-        const claudeWarning = provider === 'claude' ? `<label class="room-confirm"><input type="checkbox" class="room-claude-confirm" ${member.confirm ? 'checked' : ''}> I will close the currently open Claude Code session before this room starts it.</label>` : '';
         if (!Array.isArray(threads)) {
             return `<div class="room-thread-loading">Discovering local ${escape(member.label)} conversations…</div>`;
         }
@@ -79,7 +78,6 @@ const RoomSetup = (() => {
         return `<div class="room-custom-fields">
             <div class="room-thread-list">${cards}</div>
             ${member.target ? `<label>Working directory<input class="room-cwd" value="${escape(member.cwd || '')}" placeholder="C:\\project"></label>` : ''}
-            ${claudeWarning}
         </div>`;
     }
 
@@ -182,7 +180,6 @@ const RoomSetup = (() => {
         if (stage.kind === 'link') {
             const member = stage.member;
             member.cwd = wizard.querySelector('.room-cwd')?.value.trim() || '';
-            member.confirm = Boolean(wizard.querySelector('.room-claude-confirm')?.checked);
             return;
         }
         if (stage.kind === 'review') {
@@ -197,7 +194,6 @@ const RoomSetup = (() => {
         if (stage.kind === 'link') {
             const member = stage.member;
             if (!member.target || !member.cwd) return 'A target and working directory are required.';
-            if (member.provider === 'claude' && !member.confirm) return 'Confirm that the current Claude session will be closed first.';
         }
         return '';
     }
@@ -210,7 +206,7 @@ const RoomSetup = (() => {
         try {
             const response = await fetch('/api/room-setup', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
-                body: JSON.stringify({ title: state.title, description: state.description, agents: state.selected, confirm_claude_resume: state.selected.some(member => member.provider === 'claude' && member.mode === 'custom' && member.confirm) }),
+                body: JSON.stringify({ title: state.title, description: state.description, agents: state.selected }),
             });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || 'Could not create room.');
