@@ -192,6 +192,10 @@ silently grants write access. It keeps the source message ID and sends the
 answer with `reply_to`, so downstream `@claude-*` mentions still use the
 normal room router.
 
+On Windows, `windows\\start_codex_thread_room.bat` starts the local server,
+the configured `codex-main` relay, and a visible Claude wrapper, then opens the
+room. It avoids starting duplicate server or relay processes.
+
 ### Channels
 Conversations are organized into channels (like Slack). The default channel is `#general`. Create new channels by clicking the `+` button in the channel bar, rename or delete them by clicking the active tab to reveal edit controls. Channels persist across server restarts.
 
