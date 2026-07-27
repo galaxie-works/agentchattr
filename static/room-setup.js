@@ -5,7 +5,7 @@ const RoomSetup = (() => {
     const landing = root.querySelector('.room-landing');
     const wizard = root.querySelector('.room-wizard');
     const createButton = document.getElementById('create-room-button');
-    const state = { data: null, selected: [], step: 0, active: true, threads: {} };
+    const state = { data: null, selected: [], step: 0, active: true, threads: {}, terminateActiveClaudeSessions: false };
 
     const escape = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -206,9 +206,17 @@ const RoomSetup = (() => {
         try {
             const response = await fetch('/api/room-setup', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
-                body: JSON.stringify({ title: state.title, description: state.description, agents: state.selected }),
+                body: JSON.stringify({ title: state.title, description: state.description, agents: state.selected, terminate_active_claude_sessions: state.terminateActiveClaudeSessions }),
             });
             const payload = await response.json();
+            if (payload.requires_session_termination) {
+                state.terminateActiveClaudeSessions = true;
+                const count = Array.isArray(payload.sessions) ? payload.sessions.length : 1;
+                error.textContent = `${count} selected Claude session${count === 1 ? ' is' : 's are'} still open. Click “Close session and create room” to end ${count === 1 ? 'it' : 'them'} and continue.`;
+                button.textContent = 'Close session and create room';
+                button.disabled = false;
+                return;
+            }
             if (!response.ok) throw new Error(payload.error || 'Could not create room.');
             applySettings({ setup_complete: true });
         } catch (err) {
@@ -218,15 +226,17 @@ const RoomSetup = (() => {
     }
 
     function bind() {
-        wizard.querySelectorAll('[data-agent-name]').forEach(input => input.addEventListener('change', () => { updateInvite(); render(); }));
+        wizard.querySelectorAll('[data-agent-name]').forEach(input => input.addEventListener('change', () => { state.terminateActiveClaudeSessions = false; updateInvite(); render(); }));
         wizard.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
             const stage = currentStage();
+            state.terminateActiveClaudeSessions = false;
             stage.member.mode = button.dataset.mode;
             state.step += 1;
             render();
         }));
         wizard.querySelectorAll('[data-thread-index]').forEach(button => button.addEventListener('click', () => {
             const stage = currentStage();
+            state.terminateActiveClaudeSessions = false;
             const thread = state.threads[stage.member.provider][Number(button.dataset.threadIndex)];
             stage.member.target = thread.id;
             stage.member.cwd = thread.cwd || stage.member.cwd || '';

@@ -27,7 +27,7 @@ from registry import RuntimeRegistry
 from relay import RelayRoutes
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
-from claude_sessions import active_session_ids
+from claude_sessions import active_sessions, terminate_sessions
 
 log = logging.getLogger(__name__)
 
@@ -1764,11 +1764,20 @@ async def create_room(request: Request):
         for launch in plan.launches
         if launch.kind == "wrapper" and launch.extra_args[:1] == ("--resume",) and len(launch.extra_args) > 1
     }
-    active_claude_targets = claude_resume_targets & active_session_ids()
+    live_claude_sessions = active_sessions()
+    active_claude_targets = claude_resume_targets & set(live_claude_sessions)
     if active_claude_targets:
-        return JSONResponse({
-            "error": "The selected Claude Code session is still open. Close that session, then create the room again."
-        }, status_code=409)
+        if body.get("terminate_active_claude_sessions") is not True:
+            return JSONResponse({
+                "error": "The selected Claude Code session is still open. Continue to close it before the room starts.",
+                "requires_session_termination": True,
+                "sessions": [{"id": target, "process_count": len(live_claude_sessions[target])} for target in sorted(active_claude_targets)],
+            }, status_code=409)
+        remaining = terminate_sessions(active_claude_targets)
+        if remaining:
+            return JSONResponse({
+                "error": "AgentChattr could not close the selected Claude Code session. Close it manually, then try again."
+            }, status_code=409)
 
     # Persist user-selected runtime aliases without rewriting config.local.toml.
     from thread_relays import ThreadRelays, runtime_relays_path

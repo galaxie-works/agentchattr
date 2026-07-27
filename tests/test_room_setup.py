@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from claude_sessions import active_session_ids, resume_target
+from claude_sessions import active_session_ids, active_sessions, resume_target, _termination_root
 from room_setup import RoomSetupError, available_agents, build_room_plan
 
 
@@ -67,6 +67,24 @@ class RoomSetupPlanTests(unittest.TestCase):
             active = active_session_ids(Path(tmp), process_is_running=lambda pid: pid == 101)
 
         self.assertEqual(active, {"live-session"})
+
+    def test_keeps_all_live_pids_for_the_same_claude_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions = Path(tmp) / "sessions"
+            sessions.mkdir()
+            (sessions / "101.json").write_text('{"sessionId":"same-session","pid":101}', encoding="utf-8")
+            (sessions / "102.json").write_text('{"sessionId":"same-session","pid":102}', encoding="utf-8")
+
+            active = active_sessions(Path(tmp), process_is_running=lambda _pid: True)
+
+        self.assertEqual(active, {"same-session": {101, 102}})
+
+    def test_terminating_a_wrapped_cli_uses_its_wrapper_root(self):
+        processes = {
+            400: (300, "claude --resume session-id"),
+            300: (1, "python wrapper.py claude-room --resume session-id"),
+        }
+        self.assertEqual(_termination_root(400, processes.get), 300)
 
     def test_extracts_claude_resume_target_from_wrapper_arguments(self):
         self.assertEqual(resume_target(["--resume", CLAUDE_ID]), CLAUDE_ID)
