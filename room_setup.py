@@ -36,6 +36,10 @@ def available_agents(config: dict) -> list[dict]:
         if not isinstance(cfg, dict) or cfg.get("type") == "thread_relay":
             continue
         provider = str(cfg.get("provider", name)).strip().lower()
+        # Project members and prior room aliases inherit a provider but are
+        # already configured instances, not another colleague to invite.
+        if name != provider:
+            continue
         result.append({
             "name": name,
             "provider": provider,
