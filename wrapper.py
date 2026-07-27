@@ -590,6 +590,14 @@ def main():
     # A project member such as codex-website is registered under a unique room
     # identity but inherits Codex's provider-specific MCP launch behaviour.
     provider = str(agent_cfg.get("provider", agent)).strip().lower()
+    if provider == "claude":
+        from claude_sessions import active_session_ids, resume_target
+
+        target = resume_target(extra)
+        if target and target in active_session_ids():
+            print("  Error: the requested Claude Code session is still open.")
+            print("  Close that session before resuming it through AgentChattr.")
+            sys.exit(2)
     cwd = agent_cfg.get("cwd", ".")
     command = agent_cfg.get("command", agent)
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")

@@ -27,6 +27,7 @@ from registry import RuntimeRegistry
 from relay import RelayRoutes
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
+from claude_sessions import active_session_ids
 
 log = logging.getLogger(__name__)
 
@@ -80,46 +81,6 @@ def _hidden_console_startupinfo():
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
     return startupinfo
-
-
-def _pid_is_running(pid: int) -> bool:
-    """Return whether a local PID still exists without ever signalling it."""
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=3,
-            )
-            return bool(_re.search(rf'^"[^"]+","{pid}"', result.stdout, _re.MULTILINE))
-        except (OSError, subprocess.SubprocessError):
-            return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
-def _active_claude_session_ids(claude_home: Path | None = None, pid_is_running=None) -> set[str]:
-    """Read Claude Code's live session registry, ignoring stale PID records."""
-    registry_dir = (claude_home or (Path.home() / ".claude")) / "sessions"
-    if not registry_dir.is_dir():
-        return set()
-    is_running = pid_is_running or _pid_is_running
-    active: set[str] = set()
-    for path in registry_dir.glob("*.json"):
-        try:
-            record = json.loads(path.read_text("utf-8"))
-            session_id = record.get("sessionId")
-            pid = int(record.get("pid", 0))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            continue
-        if isinstance(session_id, str) and session_id and is_running(pid):
-            active.add(session_id)
-    return active
 
 
 def _hats_path() -> Path:
@@ -1803,7 +1764,7 @@ async def create_room(request: Request):
         for launch in plan.launches
         if launch.kind == "wrapper" and launch.extra_args[:1] == ("--resume",) and len(launch.extra_args) > 1
     }
-    active_claude_targets = claude_resume_targets & _active_claude_session_ids()
+    active_claude_targets = claude_resume_targets & active_session_ids()
     if active_claude_targets:
         return JSONResponse({
             "error": "The selected Claude Code session is still open. Close that session, then create the room again."

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import _active_claude_session_ids
+from claude_sessions import active_session_ids, resume_target
 from room_setup import RoomSetupError, available_agents, build_room_plan
 
 
@@ -64,9 +64,14 @@ class RoomSetupPlanTests(unittest.TestCase):
             (sessions / "101.json").write_text('{"sessionId":"live-session","pid":101}', encoding="utf-8")
             (sessions / "102.json").write_text('{"sessionId":"stale-session","pid":102}', encoding="utf-8")
 
-            active = _active_claude_session_ids(Path(tmp), pid_is_running=lambda pid: pid == 101)
+            active = active_session_ids(Path(tmp), process_is_running=lambda pid: pid == 101)
 
         self.assertEqual(active, {"live-session"})
+
+    def test_extracts_claude_resume_target_from_wrapper_arguments(self):
+        self.assertEqual(resume_target(["--resume", CLAUDE_ID]), CLAUDE_ID)
+        self.assertEqual(resume_target([f"--resume={CLAUDE_ID}"]), CLAUDE_ID)
+        self.assertIsNone(resume_target(["--no-restart"]))
 
 
 if __name__ == "__main__":
