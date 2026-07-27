@@ -109,6 +109,10 @@ max_agent_hops = 4
 # uses its own native "message teammate" capability and returns the reply to
 # the room. Agentchattr never accesses provider session files or deep links.
 
+# Project members are also opt-in and normally belong in config.local.toml.
+# They materialize isolated room members named codex-NAME and claude-NAME,
+# each launched in the declared project directory. See README for examples.
+
 [mcp]
 http_port = 8200
 sse_port = 8201

@@ -11,6 +11,30 @@
 #   4. Start the wrapper: python wrapper_api.py NAME
 #      (or use: windows/start_api_agent.bat NAME)
 
+# --- Example: project-scoped Codex and Claude members ---
+#
+# This is the supported project catalog. It intentionally does not inspect
+# provider session files or deep links. Each member becomes a separate
+# AgentChattr identity and is launched in this project path:
+#
+# [projects.website]
+# path = "C:\\dev\\website"
+# label = "Website"
+#
+# [projects.website.members.codex]
+# teammate = "reviewer"          # optional; enables @website-codex relay
+# # relay_alias = "website-codex" # optional; this is the default
+#
+# [projects.website.members.claude]
+# teammate = "reviewer"          # optional; enables @website-claude relay
+#
+# Start them separately after the server is running:
+#   python wrapper.py codex-website
+#   python wrapper.py claude-website
+#
+# List registrations (and whether their paths exist):
+#   python projects.py list
+
 # --- Example: Qwen via llama-server ---
 # [agents.qwen]
 # type = "api"                              # required — marks this as an API agent

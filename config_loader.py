@@ -105,8 +105,8 @@ def load_config(root: Path | None = None) -> dict:
 
     config.local.toml is gitignored and intended for user-specific agents
     (e.g. local LLM endpoints) that shouldn't be committed.
-    The [agents] and [relays] sections are merged — local entries are added
-    alongside (not replacing) entries defined in config.toml.
+    The [agents], [relays], and [projects] sections are merged — local entries
+    are added alongside (not replacing) entries defined in config.toml.
 
     AGENTCHATTR_* environment variables override values from config.toml
     (see module docstring for the list).
@@ -142,6 +142,21 @@ def load_config(root: Path | None = None) -> dict:
             else:
                 print(f"  Warning: Ignoring local relay '{alias}' (already defined in config.toml)")
 
+        # Project registrations are also local machine wiring.  They become
+        # isolated agent members only after all local config is merged below.
+        local_projects = local.get("projects", {})
+        config_projects = config.setdefault("projects", {})
+        for name, project_cfg in local_projects.items():
+            if name not in config_projects:
+                config_projects[name] = project_cfg
+            else:
+                print(f"  Warning: Ignoring local project '{name}' (already defined in config.toml)")
+
     _apply_env_overrides(config)
+
+    # Project members are generated after overrides/merges so the web server
+    # and wrappers use exactly the same provider, CWD, and relay definitions.
+    from projects import materialize_projects
+    materialize_projects(config, root)
 
     return config

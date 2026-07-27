@@ -587,6 +587,9 @@ def main():
 
     agent = args.agent
     agent_cfg = config.get("agents", {}).get(agent, {})
+    # A project member such as codex-website is registered under a unique room
+    # identity but inherits Codex's provider-specific MCP launch behaviour.
+    provider = str(agent_cfg.get("provider", agent)).strip().lower()
     cwd = agent_cfg.get("cwd", ".")
     command = agent_cfg.get("command", agent)
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
@@ -611,7 +614,7 @@ def main():
     # Resolve MCP injection mode to determine if a proxy is needed.
     # Direct-connect modes (settings_file, env, flag) don't need a proxy.
     # proxy_flag mode needs a proxy. No mcp_inject = proxy fallback.
-    inject_cfg = _resolve_mcp_inject(agent, agent_cfg)
+    inject_cfg = _resolve_mcp_inject(provider, agent_cfg)
     inject_mode = inject_cfg.get("mcp_inject", "")
     if inject_mode and inject_mode not in _VALID_INJECT_MODES:
         print(f"  Error: unknown mcp_inject mode '{inject_mode}' for agent '{agent}'.")
@@ -715,11 +718,11 @@ def main():
 
     # Gemini: ensure the project directory is trusted so MCPs are allowed.
     # Gemini blocks ALL MCPs for untrusted folders — even system-settings ones.
-    if agent == "gemini" or inject_cfg.get("mcp_inject") == "env":
+    if provider == "gemini" or inject_cfg.get("mcp_inject") == "env":
         _ensure_gemini_folder_trusted(project_dir)
 
     launch_args, env, inject_env, mcp_settings_path = _build_provider_launch(
-        agent=agent,
+        agent=provider,
         agent_cfg=agent_cfg,
         instance_name=assigned_name,
         data_dir=data_dir,

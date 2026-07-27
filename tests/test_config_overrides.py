@@ -128,6 +128,26 @@ class ConfigOverrideTests(unittest.TestCase):
         self.assertEqual(config["relays"]["review"]["teammate"], "reviewer")
         self.assertEqual(config["relays"]["committed"]["teammate"], "base")
 
+    def test_local_project_is_merged_and_materializes_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[agents.codex]\ncommand = 'codex'\ncwd = '.'\n\n"
+                "[agents.claude]\ncommand = 'claude'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "config.local.toml").write_text(
+                "[projects.demo]\npath = './workspace'\n\n"
+                "[projects.demo.members.codex]\nteammate = 'reviewer'\n",
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["agents"]["codex-demo"]["provider"], "codex")
+        self.assertEqual(config["agents"]["codex-demo"]["cwd"], str((root / "workspace").resolve()))
+        self.assertEqual(config["relays"]["demo-codex"]["agent"], "codex-demo")
+
 
 class CliOverrideExtractionTests(unittest.TestCase):
     """apply_cli_overrides() extracts CLI flags into env vars.

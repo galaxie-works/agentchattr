@@ -136,6 +136,41 @@ This is intentionally opt-in and local: Agentchattr does not parse deep links,
 open provider databases, impersonate an agent, or write to any external thread.
 The normal per-channel hop guard still limits relay loops.
 
+### Project-scoped Codex and Claude members
+
+To keep a room member tied to one repository, register its root explicitly in
+`config.local.toml`. This does **not** scrape Codex Desktop or Claude session
+storage: those formats are private and a listed session is not proof that its
+thread is safe to wake. Instead, a registration creates a dedicated room member
+whose wrapper starts the provider CLI in that exact directory.
+
+```toml
+[projects.agentchattr]
+path = "C:\\dev\\agentchattr"
+label = "AgentChattr"
+
+[projects.agentchattr.members.codex]
+teammate = "reviewer"
+
+[projects.agentchattr.members.claude]
+teammate = "reviewer"
+```
+
+The example creates `@codex-agentchattr` and `@claude-agentchattr`; launch
+them with `python wrapper.py codex-agentchattr` and `python wrapper.py
+claude-agentchattr`. Their native teammate aliases are `@agentchattr-codex`
+and `@agentchattr-claude`, respectively. A relay only exists when `teammate`
+is declared. List all locally registered projects and verify their paths with:
+
+```bash
+python projects.py list
+```
+
+Each provider runtime still decides whether it supports a native teammate
+message tool and which teammate names it can address. AgentChattr provides the
+room correlation and isolation; it cannot attach to an arbitrary already-open
+Codex Desktop or Claude thread.
+
 ### Channels
 Conversations are organized into channels (like Slack). The default channel is `#general`. Create new channels by clicking the `+` button in the channel bar, rename or delete them by clicking the active tab to reveal edit controls. Channels persist across server restarts.
 
