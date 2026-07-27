@@ -590,6 +590,18 @@ def main():
     # A project member such as codex-website is registered under a unique room
     # identity but inherits Codex's provider-specific MCP launch behaviour.
     provider = str(agent_cfg.get("provider", agent)).strip().lower()
+    data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    worker_lock = None
+    if agent_cfg.get("singleton") is True or agent.endswith("-room"):
+        from worker_singleton import WorkerAlreadyRunning, acquire_worker_lock
+
+        try:
+            worker_lock = acquire_worker_lock(agent, data_dir)
+        except WorkerAlreadyRunning:
+            print(f"  Room worker @{agent} is already running; duplicate launch ignored.")
+            return
+
     if provider == "claude":
         from claude_sessions import active_session_ids, resume_target
 
@@ -600,8 +612,6 @@ def main():
             sys.exit(2)
     cwd = agent_cfg.get("cwd", ".")
     command = agent_cfg.get("command", agent)
-    data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
-    data_dir.mkdir(parents=True, exist_ok=True)
     server_port = config.get("server", {}).get("port", 8300)
     mcp_cfg = config.get("mcp", {})
 

@@ -45,7 +45,9 @@ class RoomSetupPlanTests(unittest.TestCase):
             }, root)
 
         self.assertEqual(plan.thread_relays["codex-room"]["target"], "saved-codex-thread")
+        self.assertTrue(plan.thread_relays["codex-room"]["singleton"])
         self.assertEqual(plan.room_agents["claude-room"]["cwd"], str(root.resolve()))
+        self.assertTrue(plan.room_agents["claude-room"]["singleton"])
         self.assertIn(("wrapper", "claude-room", ("--resume", CLAUDE_ID)), [
             (item.kind, item.agent, item.extra_args) for item in plan.launches
         ])

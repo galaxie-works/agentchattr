@@ -113,6 +113,7 @@ class ThreadRelays:
         for relay in self._relays.values():
             agents[relay.name] = {
                 "type": "thread_relay",
+                "singleton": True,
                 "provider": relay.provider,
                 "command": relay.command,
                 "cwd": str(relay.cwd),

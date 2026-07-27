@@ -112,6 +112,7 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
         if provider == "codex":
             thread_relays[alias] = {
                 "provider": "codex",
+                "singleton": True,
                 "target": target,
                 "cwd": str(cwd),
                 "label": f"Codex · {title}",
@@ -126,6 +127,7 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
             cfg = dict(config.get("agents", {}).get(name, {}))
             cfg.update({
                 "provider": "claude",
+                "singleton": True,
                 "command": str(cfg.get("command", "claude")),
                 "cwd": str(cwd),
                 "label": f"Claude · {title}",

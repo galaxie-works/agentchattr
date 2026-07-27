@@ -176,6 +176,14 @@ def main() -> int:
         data_dir = ROOT / data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    from worker_singleton import WorkerAlreadyRunning, acquire_worker_lock
+
+    try:
+        worker_lock = acquire_worker_lock(relay.name, data_dir)
+    except WorkerAlreadyRunning:
+        print(f"Thread relay @{relay.name} is already running; duplicate launch ignored.")
+        return 0
+
     try:
         registration = _register_instance(server_port, relay.name, relay.label)
     except Exception as exc:
@@ -221,6 +229,7 @@ def main() -> int:
             _post(f"http://127.0.0.1:{server_port}/api/deregister/{name}", token, {})
         except Exception:
             pass
+        worker_lock.release()
 
 
 if __name__ == "__main__":

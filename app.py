@@ -74,21 +74,124 @@ agent_hats: dict[str, str] = {}  # { agent_name: svg_string }
 room_workers: dict[str, subprocess.Popen] = {}
 
 
-def _room_worker_exists(kind: str, agent: str) -> bool:
-    """Detect a worker that outlived a server restart before launching another."""
-    needle = f"thread_relay.py {agent}" if kind == "thread_relay" else f"wrapper.py {agent}"
+def _worker_command_matches(command: str, kind: str, agent: str) -> bool:
+    script = "thread_relay.py" if kind == "thread_relay" else "wrapper.py"
+    pattern = (
+        rf'(?:^|[\\/\s"\']){_re.escape(script)}["\']?\s+'
+        rf'["\']?{_re.escape(agent)}["\']?(?=\s|$)'
+    )
+    return _re.search(pattern, command, flags=_re.IGNORECASE) is not None
+
+
+def _matching_worker_roots(processes: list[dict], kind: str, agent: str) -> list[dict]:
+    """Collapse launcher/child rows into independent worker root processes."""
+    matching = {}
+    for process in processes:
+        command = str(process.get("command", ""))
+        if not _worker_command_matches(command, kind, agent):
+            continue
+        try:
+            pid = int(process["pid"])
+            parent_pid = int(process.get("parent_pid", 0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        matching[pid] = {
+            "pid": pid,
+            "parent_pid": parent_pid,
+            "created": str(process.get("created", "")),
+            "command": command,
+        }
+    roots = [process for process in matching.values() if process["parent_pid"] not in matching]
+    return sorted(roots, key=lambda process: (process["created"], process["pid"]))
+
+
+def _room_worker_roots(kind: str, agent: str) -> list[dict]:
+    """Return independent OS processes for one room worker identity."""
     try:
         if sys.platform == "win32":
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine"],
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process | "
+                    "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | "
+                    "ConvertTo-Json -Compress",
+                ],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=5,
             )
-            return needle.lower() in result.stdout.lower()
-        result = subprocess.run(["ps", "-axo", "command="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
-        return needle in result.stdout
-    except (OSError, subprocess.SubprocessError):
+            payload = json.loads(result.stdout or "[]")
+            rows = payload if isinstance(payload, list) else [payload]
+            processes = [
+                {
+                    "pid": row.get("ProcessId"),
+                    "parent_pid": row.get("ParentProcessId"),
+                    "created": row.get("CreationDate"),
+                    "command": row.get("CommandLine") or "",
+                }
+                for row in rows if isinstance(row, dict)
+            ]
+        else:
+            result = subprocess.run(
+                ["ps", "-axo", "pid=,ppid=,lstart=,command="],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5,
+            )
+            processes = []
+            for line in result.stdout.splitlines():
+                match = _re.match(r"\s*(\d+)\s+(\d+)\s+(.{24})\s+(.*)", line)
+                if match:
+                    processes.append({
+                        "pid": match.group(1),
+                        "parent_pid": match.group(2),
+                        "created": match.group(3),
+                        "command": match.group(4),
+                    })
+        return _matching_worker_roots(processes, kind, agent)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+
+
+def _terminate_worker_tree(pid: int) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=10,
+        )
+        return
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def _reconcile_room_worker(kind: str, agent: str) -> bool:
+    """Keep one lock-owning worker, or replace stale/duplicate processes."""
+    roots = _room_worker_roots(kind, agent)
+    if not roots:
         return False
+
+    from worker_singleton import WorkerAlreadyRunning, acquire_worker_lock
+
+    data_dir = _settings_path().parent
+    try:
+        probe = acquire_worker_lock(agent, data_dir)
+    except WorkerAlreadyRunning:
+        lock_is_held = True
+    else:
+        lock_is_held = False
+        probe.release()
+
+    if lock_is_held and len(roots) == 1:
+        return True
+
+    reason = "legacy worker without a singleton lock" if not lock_is_held else "duplicate workers"
+    log.warning("Replacing %s for room member %s (%s roots)", reason, agent, len(roots))
+    for process in roots:
+        _terminate_worker_tree(process["pid"])
+    room_workers.pop(agent, None)
+    return False
 
 
 def _hidden_console_startupinfo():
@@ -244,7 +347,7 @@ def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) 
     existing = room_workers.get(agent)
     if existing and existing.poll() is None:
         return
-    if _room_worker_exists(kind, agent):
+    if _reconcile_room_worker(kind, agent):
         return
 
     root = Path(__file__).parent

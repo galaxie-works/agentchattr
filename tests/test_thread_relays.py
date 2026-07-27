@@ -36,6 +36,7 @@ class ThreadRelayConfigTests(unittest.TestCase):
 
         self.assertEqual(relays.names, ["codex-main"])
         self.assertEqual(config["agents"]["codex-main"]["type"], "thread_relay")
+        self.assertTrue(config["agents"]["codex-main"]["singleton"])
         self.assertEqual(config["agents"]["codex-main"]["session_id"], THREAD_ID)
         self.assertEqual(config["agents"]["codex-main"]["cwd"], str((root / "workspace").resolve()))
 
