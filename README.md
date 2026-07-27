@@ -173,14 +173,18 @@ Codex Desktop or Claude thread.
 
 ### Relay a room mention to one Codex thread
 
-For an explicit local Codex thread, use a `thread_relays` entry instead of a
-normal Codex wrapper. It creates a dedicated room member whose worker resumes
-only the configured thread through `codex exec resume`, then posts that
-thread's final answer back to the originating room message.
+For an explicit local Codex or Claude conversation, use a `thread_relays`
+entry instead of a normal wrapper. It creates a dedicated room member whose
+worker resumes only the configured provider target, then posts that final
+answer back to the originating room message. The Codex and Claude identity
+pills also expose this setting: save a target there, then restart the room via
+the Desktop shortcut. Those UI values stay in ignored `data/thread_relays.json`
+and never rewrite `config.local.toml`.
 
 ```toml
 [thread_relays.codex-main]
-thread_id = "019fa400-ed55-73e1-9209-08b172015054"
+provider = "codex"
+target = "019fa400-ed55-73e1-9209-08b172015054" # UUID or saved thread name
 cwd = "C:\\dev"
 label = "Codex · Main thread"
 ```
@@ -191,6 +195,23 @@ accepts a thread ID from a chat message, scans provider session storage, or
 silently grants write access. It keeps the source message ID and sends the
 answer with `reply_to`, so downstream `@claude-*` mentions still use the
 normal room router.
+
+For Claude Code, define a second explicit relay with the session UUID used by
+`claude --resume` (a thread name is intentionally not selected automatically):
+
+```toml
+[thread_relays.claude-main]
+provider = "claude"
+target = "00000000-0000-0000-0000-000000000000"
+cwd = "C:\\dev"
+label = "Claude · Main session"
+```
+
+Run `python thread_relay.py claude-main` and address `@claude-main`. Claude
+runs in print mode with tools disabled and `permission-mode=plan`; its final
+response is posted back to the matching room message. The UUID must be chosen
+explicitly by the user — AgentChattr never discovers or selects a Claude
+conversation on its own.
 
 On Windows, `windows\\start_codex_thread_room.bat` starts the local server,
 the configured `codex-main` relay, and a visible Claude wrapper, then opens the

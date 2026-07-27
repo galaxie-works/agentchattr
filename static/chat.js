@@ -1359,6 +1359,18 @@ function _closeAgentNameModal() {
 
 // --- Pill popover (rename + role) ---
 
+function relayProviderForAgent(opts) {
+    const identity = `${opts.name || ''} ${opts.base || ''}`.toLowerCase();
+    if (identity.includes('codex')) return 'codex';
+    if (identity.includes('claude')) return 'claude';
+    return '';
+}
+
+function relayNameForAgent(opts, provider) {
+    const name = String(opts.name || '').toLowerCase();
+    return name === `${provider}-main` ? name : `${provider}-main`;
+}
+
 function showPillPopover(pillEl, opts) {
     if (opts.mode === 'pending') _nameModalActive = true;
 
@@ -1378,6 +1390,21 @@ function showPillPopover(pillEl, opts) {
         .map(r =>
             `<button class="role-preset-chip pill-role-chip pill-custom-chip ${currentRole === r.toLowerCase() ? 'active' : ''}" data-role="${escapeHtml(r)}"><span class="pill-custom-label">${escapeHtml(r)}</span><span class="pill-custom-trash"><svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V3h4v1M5 4v8.5h6V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="pill-custom-confirm"><span class="pill-confirm-yes">&#10003;</span><span class="pill-confirm-no">&#10005;</span></span></button>`
         ).join('');
+    const relayProvider = relayProviderForAgent(opts);
+    const relayName = relayProvider ? relayNameForAgent(opts, relayProvider) : '';
+    const relayHtml = relayProvider ? `
+        <div class="pill-popover-section pill-relay-section" data-relay-name="${relayName}">
+            <label class="pill-popover-label">${relayProvider === 'codex' ? 'Codex thread relay' : 'Claude session relay'}</label>
+            <div class="pill-relay-hint">${relayProvider === 'codex'
+                ? 'Target accepts a Codex thread ID or saved thread name.'
+                : 'Target must be the Claude Code resume-session UUID.'}</div>
+            <input class="pill-popover-custom-input pill-relay-target" placeholder="${relayProvider === 'codex' ? 'Thread ID or name' : 'Session UUID'}" maxlength="200" spellcheck="false" />
+            <input class="pill-popover-custom-input pill-relay-cwd" placeholder="Working directory" maxlength="500" spellcheck="false" />
+            <div class="pill-relay-actions">
+                <button class="pill-popover-confirm pill-relay-save">Save relay target</button>
+                <span class="pill-relay-status" aria-live="polite"></span>
+            </div>
+        </div>` : '';
 
     popover.innerHTML = `
         <div class="pill-popover-section">
@@ -1387,6 +1414,7 @@ function showPillPopover(pillEl, opts) {
                 <button class="pill-popover-confirm">${opts.mode === 'pending' ? 'Confirm' : 'Rename'}</button>
             </div>
         </div>
+        ${relayHtml}
         <div class="pill-popover-section">
             <label class="pill-popover-label">Role</label>
             <div class="pill-popover-roles">
@@ -1427,7 +1455,57 @@ function showPillPopover(pillEl, opts) {
 
     const inputEl = popover.querySelector('.pill-popover-input');
     const confirmBtn = popover.querySelector('.pill-popover-confirm');
-    const customInput = popover.querySelector('.pill-popover-custom-input');
+    const customInput = popover.querySelector('.pill-popover-custom-row .pill-popover-custom-input');
+
+    const relaySection = popover.querySelector('.pill-relay-section');
+    if (relaySection) {
+        const targetInput = relaySection.querySelector('.pill-relay-target');
+        const cwdInput = relaySection.querySelector('.pill-relay-cwd');
+        const saveButton = relaySection.querySelector('.pill-relay-save');
+        const status = relaySection.querySelector('.pill-relay-status');
+        const relayHeaders = { 'X-Session-Token': SESSION_TOKEN };
+
+        fetch('/api/thread-relays', { headers: relayHeaders })
+            .then(response => response.ok ? response.json() : {})
+            .then(relays => {
+                if (!popover.isConnected) return;
+                const relay = relays[relayName] || {};
+                targetInput.value = relay.target || '';
+                cwdInput.value = relay.cwd || '';
+            })
+            .catch(() => { status.textContent = 'Could not load saved target.'; });
+
+        saveButton.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const target = targetInput.value.trim();
+            const cwd = cwdInput.value.trim();
+            if (!target || !cwd) {
+                status.textContent = 'Target and working directory are required.';
+                return;
+            }
+            saveButton.disabled = true;
+            status.textContent = 'Saving…';
+            try {
+                const response = await fetch(`/api/thread-relays/${encodeURIComponent(relayName)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+                    body: JSON.stringify({
+                        provider: relayProvider,
+                        target,
+                        cwd,
+                        label: opts.label || relayName,
+                    }),
+                });
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload.error || 'Save failed');
+                status.textContent = 'Saved. Restart via the Desktop shortcut to apply.';
+            } catch (error) {
+                status.textContent = error.message || 'Save failed.';
+            } finally {
+                saveButton.disabled = false;
+            }
+        });
+    }
 
     const closePopover = () => {
         popover.remove();

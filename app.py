@@ -148,6 +148,39 @@ def _save_settings():
     p.write_text(json.dumps(room_settings, indent=2), "utf-8")
 
 
+def _relay_target_value(raw: dict) -> str:
+    provider = str(raw.get("provider", "codex")).strip().lower()
+    legacy_key = "thread_id" if provider == "codex" else "session_id"
+    return str(raw.get("target", raw.get(legacy_key, ""))).strip()
+
+
+def _public_thread_relays() -> dict:
+    """Return only non-secret, UI-relevant relay configuration."""
+    result = {}
+    for name, raw in config.get("thread_relays", {}).items():
+        if not isinstance(raw, dict):
+            continue
+        provider = str(raw.get("provider", "codex")).strip().lower()
+        result[str(name)] = {
+            "provider": provider,
+            "target": _relay_target_value(raw),
+            "cwd": str(raw.get("cwd", "")),
+            "label": str(raw.get("label", "")),
+        }
+    return result
+
+
+def _save_runtime_thread_relays(entries: dict) -> None:
+    """Atomically persist browser-configured explicit relay targets."""
+    from thread_relays import runtime_relays_path
+
+    path = runtime_relays_path(config, Path(__file__).parent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"thread_relays": entries}, indent=2) + "\n", "utf-8")
+    temporary.replace(path)
+
+
 def _extract_agent_token(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth and auth.lower().startswith("bearer "):
@@ -1603,6 +1636,70 @@ async def get_status():
 @app.get("/api/settings")
 async def get_settings():
     return room_settings
+
+
+@app.get("/api/thread-relays")
+async def get_thread_relays():
+    """Return explicit local targets shown in the Codex and Claude pills."""
+    return JSONResponse(_public_thread_relays())
+
+
+@app.put("/api/thread-relays/{relay_name}")
+async def save_thread_relay(relay_name: str, request: Request):
+    """Persist one explicit provider target for use after the next restart."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "JSON object required"}, status_code=400)
+
+    name = relay_name.strip().lower()
+    provider = str(body.get("provider", "")).strip().lower()
+    cwd = str(body.get("cwd", "")).strip()
+    label = str(body.get("label", "")).strip()
+    if provider not in {"codex", "claude"}:
+        return JSONResponse({"error": "provider must be codex or claude"}, status_code=400)
+    if not cwd:
+        return JSONResponse({"error": "working directory is required"}, status_code=400)
+
+    from thread_relays import ThreadRelays, runtime_relays_path, validate_target
+    try:
+        target = validate_target(provider, body.get("target", ""))
+        existing = config.get("thread_relays", {}).get(name, {})
+        if not isinstance(existing, dict):
+            existing = {}
+        entry = {
+            "provider": provider,
+            "target": target,
+            "cwd": cwd,
+            "label": label or f"{provider.title()} · {name}",
+            "command": str(existing.get("command", provider)),
+            "color": str(existing.get("color", "#10a37f" if provider == "codex" else "#da7756")),
+            "timeout_seconds": existing.get("timeout_seconds", 600),
+        }
+        base_agents = {
+            agent_name for agent_name, agent_cfg in config.get("agents", {}).items()
+            if not isinstance(agent_cfg, dict) or agent_cfg.get("type") != "thread_relay"
+        }
+        ThreadRelays({name: entry}, base_agents, Path(__file__).parent)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    path = runtime_relays_path(config, Path(__file__).parent)
+    entries: dict = {}
+    if path.exists():
+        try:
+            saved = json.loads(path.read_text("utf-8"))
+            candidate = saved.get("thread_relays", saved) if isinstance(saved, dict) else {}
+            if isinstance(candidate, dict):
+                entries = candidate
+        except (OSError, json.JSONDecodeError):
+            # A fresh valid save is safer than retaining an unreadable file.
+            entries = {}
+    entries[name] = entry
+    _save_runtime_thread_relays(entries)
+    return JSONResponse({"ok": True, "relay": {"name": name, **entry}, "restart_required": True})
 
 
 @app.delete("/api/hat/{agent_name}")

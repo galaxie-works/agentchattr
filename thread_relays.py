@@ -1,4 +1,4 @@
-"""Configuration for relays that address one persisted Codex thread.
+"""Configuration for relays that address one persisted provider session.
 
 Thread relays are intentionally explicit.  They never scan local session
 storage, infer deep links, or accept a thread ID from a room message.
@@ -15,10 +15,36 @@ import uuid
 _HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 
 
+def runtime_relays_path(config: dict, root: Path) -> Path:
+    """Return the local UI-owned relay settings file.
+
+    It intentionally lives inside the ignored data directory, rather than
+    rewriting a user's TOML file from the browser.
+    """
+    data_dir = Path(config.get("server", {}).get("data_dir", "./data"))
+    if not data_dir.is_absolute():
+        data_dir = root / data_dir
+    return data_dir.resolve() / "thread_relays.json"
+
+
+def validate_target(provider: str, target: object) -> str:
+    """Validate one explicit resume target without discovering sessions."""
+    value = str(target or "").strip()
+    if not value or len(value) > 200 or any(ord(char) < 32 for char in value):
+        raise ValueError("Thread relay target must be a non-empty single-line value.")
+    if provider == "claude":
+        try:
+            uuid.UUID(value)
+        except ValueError:
+            raise ValueError("Claude thread relays require a resume session UUID.") from None
+    return value
+
+
 @dataclass(frozen=True)
 class ThreadRelay:
     name: str
-    thread_id: str
+    provider: str
+    session_id: str
     cwd: Path
     command: str
     label: str
@@ -43,11 +69,13 @@ class ThreadRelays:
             if not isinstance(raw_cfg, dict):
                 raise ValueError(f"Thread relay {name!r} must be a TOML table.")
 
-            thread_id = str(raw_cfg.get("thread_id", "")).strip()
-            try:
-                uuid.UUID(thread_id)
-            except (AttributeError, ValueError):
-                raise ValueError(f"Thread relay {name!r} requires a UUID thread_id.") from None
+            provider = str(raw_cfg.get("provider", "codex")).strip().lower()
+            if provider not in {"codex", "claude"}:
+                raise ValueError(f"Thread relay {name!r} provider must be 'codex' or 'claude'.")
+            id_key = "thread_id" if provider == "codex" else "session_id"
+            # ``target`` is the UI's provider-neutral representation. The
+            # older per-provider keys remain supported for existing local TOML.
+            session_id = validate_target(provider, raw_cfg.get("target", raw_cfg.get(id_key, "")))
 
             raw_cwd = str(raw_cfg.get("cwd", ".")).strip()
             cwd = Path(raw_cwd).expanduser()
@@ -62,10 +90,11 @@ class ThreadRelays:
                 raise ValueError(f"Thread relay {name!r} requires a command.")
             self._relays[name] = ThreadRelay(
                 name=name,
-                thread_id=thread_id,
+                provider=provider,
+                session_id=session_id,
                 cwd=cwd.resolve(),
                 command=command,
-                label=str(raw_cfg.get("label", f"Codex · {name}")).strip() or name,
+                label=str(raw_cfg.get("label", f"{provider.title()} · {name}")).strip() or name,
                 color=str(raw_cfg.get("color", "#10a37f")),
                 timeout_seconds=timeout,
             )
@@ -84,10 +113,14 @@ class ThreadRelays:
         for relay in self._relays.values():
             agents[relay.name] = {
                 "type": "thread_relay",
-                "provider": "codex",
+                "provider": relay.provider,
                 "command": relay.command,
                 "cwd": str(relay.cwd),
-                "thread_id": relay.thread_id,
+                "target": relay.session_id,
+                "session_id": relay.session_id,
+                # Keep this field for existing integrations that inspected a
+                # Codex relay before the provider-neutral ``target`` existed.
+                "thread_id": relay.session_id if relay.provider == "codex" else "",
                 "label": relay.label,
                 "color": relay.color,
                 "timeout_seconds": relay.timeout_seconds,

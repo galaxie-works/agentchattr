@@ -36,16 +36,29 @@ class ThreadRelayConfigTests(unittest.TestCase):
 
         self.assertEqual(relays.names, ["codex-main"])
         self.assertEqual(config["agents"]["codex-main"]["type"], "thread_relay")
-        self.assertEqual(config["agents"]["codex-main"]["thread_id"], THREAD_ID)
+        self.assertEqual(config["agents"]["codex-main"]["session_id"], THREAD_ID)
         self.assertEqual(config["agents"]["codex-main"]["cwd"], str((root / "workspace").resolve()))
 
-    def test_rejects_bad_thread_id(self):
-        with self.assertRaisesRegex(ValueError, "UUID"):
-            ThreadRelays({"codex-main": {"thread_id": "codex://threads/nope"}}, set(), ROOT)
+    def test_codex_accepts_a_saved_thread_name_but_claude_requires_a_uuid(self):
+        relays = ThreadRelays({"codex-main": {"target": "main-room-thread"}}, set(), ROOT)
+        self.assertEqual(relays.get("codex-main").session_id, "main-room-thread")
+        with self.assertRaisesRegex(ValueError, "Claude"):
+            ThreadRelays({"claude-main": {"provider": "claude", "target": "main-room"}}, set(), ROOT)
 
     def test_rejects_conflicting_agent_name(self):
         with self.assertRaisesRegex(ValueError, "conflicts"):
             ThreadRelays({"codex": {"thread_id": THREAD_ID}}, {"codex"}, ROOT)
+
+    def test_materializes_a_claude_session_relay(self):
+        config = {
+            "agents": {},
+            "thread_relays": {
+                "claude-main": {"provider": "claude", "session_id": THREAD_ID},
+            },
+        }
+        materialize_thread_relays(config, ROOT)
+        self.assertEqual(config["agents"]["claude-main"]["provider"], "claude")
+        self.assertEqual(config["agents"]["claude-main"]["session_id"], THREAD_ID)
 
 
 class ThreadRelayWorkerTests(unittest.TestCase):
@@ -65,7 +78,7 @@ class ThreadRelayWorkerTests(unittest.TestCase):
     def test_run_turn_resumes_only_the_configured_thread_in_read_only_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             relay = ThreadRelay(
-                name="codex-main", thread_id=THREAD_ID, cwd=Path(tmp), command="codex",
+                name="codex-main", provider="codex", session_id=THREAD_ID, cwd=Path(tmp), command="codex",
                 label="Main", color="#10a37f", timeout_seconds=30,
             )
             completed = SimpleNamespace(
@@ -83,6 +96,26 @@ class ThreadRelayWorkerTests(unittest.TestCase):
         ])
         self.assertEqual(args[7], THREAD_ID)
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+
+    def test_extracts_claude_print_result(self):
+        self.assertEqual(extract_final_message('{"result":"Claude reply"}', "claude"), "Claude reply")
+
+    def test_run_turn_resumes_the_configured_claude_session_with_no_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = ThreadRelay(
+                name="claude-main", provider="claude", session_id=THREAD_ID, cwd=Path(tmp), command="claude",
+                label="Main", color="#da7756", timeout_seconds=30,
+            )
+            completed = SimpleNamespace(stdout='{"result":"ok"}', stderr="", returncode=0)
+            with mock.patch("thread_relay.shutil.which", return_value="C:/bin/claude"), \
+                 mock.patch("thread_relay.subprocess.run", return_value=completed) as run:
+                answer, error = run_turn(relay, "relay prompt")
+
+        self.assertEqual((answer, error), ("ok", ""))
+        self.assertEqual(run.call_args.args[0], [
+            "C:/bin/claude", "--print", "--output-format", "json", "--resume", THREAD_ID,
+            "--tools", "", "--permission-mode", "plan", "relay prompt",
+        ])
 
 
 if __name__ == "__main__":

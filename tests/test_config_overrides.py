@@ -167,6 +167,27 @@ class ConfigOverrideTests(unittest.TestCase):
         self.assertEqual(config["agents"]["codex-main"]["type"], "thread_relay")
         self.assertEqual(config["agents"]["codex-main"]["thread_id"], "019fa400-ed55-73e1-9209-08b172015054")
 
+    def test_runtime_thread_relay_target_overrides_local_toml_without_editing_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[server]\ndata_dir = './data'\n\n[agents.codex]\ncommand = 'codex'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "config.local.toml").write_text(
+                "[thread_relays.codex-main]\nthread_id = 'old-thread'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "data").mkdir()
+            (root / "data" / "thread_relays.json").write_text(
+                '{"thread_relays":{"codex-main":{"provider":"codex","target":"new-thread","cwd":"."}}}',
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["agents"]["codex-main"]["target"], "new-thread")
+
 
 class CliOverrideExtractionTests(unittest.TestCase):
     """apply_cli_overrides() extracts CLI flags into env vars.

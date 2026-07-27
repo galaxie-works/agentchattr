@@ -21,6 +21,7 @@ install directory.
 import os
 import sys
 import tomllib
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -100,6 +101,30 @@ def _apply_env_overrides(config: dict) -> None:
         config.setdefault(section, {})[key] = value
 
 
+def _merge_runtime_thread_relays(config: dict, root: Path) -> None:
+    """Apply local UI relay targets after TOML without mutating either TOML file."""
+    from thread_relays import runtime_relays_path
+
+    path = runtime_relays_path(config, root)
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  Warning: Ignoring invalid runtime thread relays at {path}: {exc}")
+        return
+    entries = payload.get("thread_relays", payload) if isinstance(payload, dict) else None
+    if not isinstance(entries, dict):
+        print(f"  Warning: Ignoring invalid runtime thread relays at {path}")
+        return
+    merged = config.setdefault("thread_relays", {})
+    for name, relay_cfg in entries.items():
+        if isinstance(relay_cfg, dict):
+            # An explicit local setting from the UI is deliberately allowed to
+            # update the matching local TOML relay after a restart.
+            merged[name] = relay_cfg
+
+
 def load_config(root: Path | None = None) -> dict:
     """Load config.toml and merge config.local.toml if it exists.
 
@@ -161,6 +186,7 @@ def load_config(root: Path | None = None) -> dict:
                 print(f"  Warning: Ignoring local thread relay '{name}' (already defined in config.toml)")
 
     _apply_env_overrides(config)
+    _merge_runtime_thread_relays(config, root)
 
     # Project members are generated after overrides/merges so the web server
     # and wrappers use exactly the same provider, CWD, and relay definitions.

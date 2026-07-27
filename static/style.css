@@ -3074,6 +3074,29 @@ pre:hover .code-copy-btn { opacity: 1; }
 .pill-popover-custom-input:focus { border-color: var(--accent); outline: none; }
 .pill-popover-custom-input::placeholder { color: var(--text-dim); }
 
+/* Explicit provider-thread target, configured from the provider's pill. */
+.pill-relay-section { border-top: 1px solid var(--border); padding-top: 10px; }
+.pill-relay-hint {
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.35;
+    margin: -2px 0 8px;
+}
+.pill-relay-section .pill-popover-custom-input { margin-top: 6px; }
+.pill-relay-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.pill-relay-save:disabled { cursor: wait; opacity: 0.65; }
+.pill-relay-status {
+    color: var(--text-dim);
+    flex: 1;
+    font-size: 10px;
+    line-height: 1.25;
+}
+
 /* --- Pill popover: color picker --- */
 .pill-popover-colors {
     display: flex;

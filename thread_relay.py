@@ -1,9 +1,9 @@
-"""Run one AgentChattr member backed by a specific Codex thread.
+"""Run one AgentChattr member backed by one persisted provider session.
 
 The worker is a local adapter: it consumes only its own AgentChattr queue,
-uses ``codex exec resume`` with the configured UUID, and posts the final agent
-message back as a reply.  It does not read provider session files or accept a
-thread id from chat input.
+uses the configured provider's resume command with one explicit target, and
+posts the final agent message back as a reply. It does not read provider
+session files or accept a target from chat input.
 """
 
 from __future__ import annotations
@@ -46,8 +46,16 @@ def build_turn_prompt(entry: dict) -> str:
     )
 
 
-def extract_final_message(stdout: str) -> str:
-    """Return the last completed Codex agent message from exec --json output."""
+def extract_final_message(stdout: str, provider: str = "codex") -> str:
+    """Return the final provider response from its machine-readable output."""
+    if provider == "claude":
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            return ""
+        result = payload.get("result")
+        return result.strip() if isinstance(result, str) else ""
+
     result = ""
     for line in stdout.splitlines():
         try:
@@ -63,7 +71,7 @@ def extract_final_message(stdout: str) -> str:
 
 
 def run_turn(relay, prompt: str) -> tuple[str, str]:
-    """Resume the configured thread using the local Codex CLI.
+    """Resume the configured provider target using its local CLI.
 
     Read-only sandboxing is deliberate: the bridge is for conversation, not
     unattended repository mutation. A caller can explicitly change that later
@@ -71,14 +79,20 @@ def run_turn(relay, prompt: str) -> tuple[str, str]:
     """
     executable = shutil.which(relay.command)
     if not executable:
-        return "", f"Codex command {relay.command!r} was not found on PATH."
+        return "", f"{relay.provider.title()} command {relay.command!r} was not found on PATH."
     if not relay.cwd.is_dir():
         return "", f"Configured relay directory does not exist: {relay.cwd}"
 
-    args = [
-        executable, "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "resume",
-        relay.thread_id, prompt,
-    ]
+    if relay.provider == "claude":
+        args = [
+            executable, "--print", "--output-format", "json", "--resume", relay.session_id,
+            "--tools", "", "--permission-mode", "plan", prompt,
+        ]
+    else:
+        args = [
+            executable, "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "resume",
+            relay.session_id, prompt,
+        ]
     try:
         completed = subprocess.run(
             args,
@@ -91,15 +105,15 @@ def run_turn(relay, prompt: str) -> tuple[str, str]:
             timeout=relay.timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        return "", f"Timed out after {relay.timeout_seconds}s while waiting for the Codex thread."
+        return "", f"Timed out after {relay.timeout_seconds}s while waiting for the {relay.provider} relay."
     except OSError as exc:
-        return "", f"Could not start Codex: {exc}"
+        return "", f"Could not start {relay.provider}: {exc}"
 
-    final = extract_final_message(completed.stdout)
+    final = extract_final_message(completed.stdout, relay.provider)
     if final:
         return final, ""
     detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "no final agent message"
-    return "", f"Codex relay exited with code {completed.returncode}: {detail}"
+    return "", f"{relay.provider.title()} relay exited with code {completed.returncode}: {detail}"
 
 
 def _post(url: str, token: str, payload: dict) -> dict:
@@ -149,7 +163,7 @@ def main() -> int:
     configured = ThreadRelays(config.get("thread_relays"), set(
         name for name, cfg in config.get("agents", {}).items() if cfg.get("type") != "thread_relay"
     ), ROOT)
-    parser = argparse.ArgumentParser(description="Bridge an AgentChattr member to a persisted Codex thread")
+    parser = argparse.ArgumentParser(description="Bridge an AgentChattr member to a persisted provider session")
     parser.add_argument("agent", choices=configured.names, help="Configured thread relay to run")
     parser.add_argument("--no-restart", action="store_true", help="Exit if the server cannot be reached")
     args = parser.parse_args()
@@ -170,7 +184,7 @@ def main() -> int:
     identity = {"name": registration["name"], "token": registration["token"], "active": False}
     identity_lock = threading.Lock()
     queue_file = data_dir / f"{identity['name']}_queue.jsonl"
-    print(f"Thread relay @{identity['name']} -> {relay.thread_id}")
+    print(f"Thread relay @{identity['name']} -> {relay.provider}:{relay.session_id}")
 
     stop = threading.Event()
     heartbeat = threading.Thread(

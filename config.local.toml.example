@@ -42,13 +42,27 @@
 # It does not inspect session files or accept a thread id from room messages.
 #
 # [thread_relays.codex-main]
-# thread_id = "019fa400-ed55-73e1-9209-08b172015054"
+# provider = "codex"
+# target = "019fa400-ed55-73e1-9209-08b172015054" # UUID or saved thread name
 # cwd = "C:\\dev"
 # label = "Codex · Main thread"
 # # timeout_seconds = 600
 #
 # Start it after the AgentChattr server:
 #   python thread_relay.py codex-main
+
+# --- Example: relay to one existing Claude Code session ---
+#
+# Use the UUID passed to `claude --resume <session_id>`. The relay resumes only
+# that session in print mode, with tools disabled and permission-mode=plan.
+#
+# [thread_relays.claude-main]
+# provider = "claude"
+# target = "00000000-0000-0000-0000-000000000000"
+# cwd = "C:\\dev"
+# label = "Claude · Main session"
+#
+# Start it with: python thread_relay.py claude-main
 
 # --- Example: Qwen via llama-server ---
 # [agents.qwen]
