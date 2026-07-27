@@ -125,6 +125,28 @@ def _merge_runtime_thread_relays(config: dict, root: Path) -> None:
             merged[name] = relay_cfg
 
 
+def _merge_runtime_room_agents(config: dict, root: Path) -> None:
+    """Load wizard-created wrapper aliases from ignored local data."""
+    from thread_relays import runtime_relays_path
+
+    path = runtime_relays_path(config, root).with_name("room_agents.json")
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  Warning: Ignoring invalid room agents at {path}: {exc}")
+        return
+    entries = payload.get("agents", payload) if isinstance(payload, dict) else None
+    if not isinstance(entries, dict):
+        print(f"  Warning: Ignoring invalid room agents at {path}")
+        return
+    agents = config.setdefault("agents", {})
+    for name, agent_cfg in entries.items():
+        if isinstance(agent_cfg, dict):
+            agents[name] = agent_cfg
+
+
 def load_config(root: Path | None = None) -> dict:
     """Load config.toml and merge config.local.toml if it exists.
 
@@ -187,6 +209,7 @@ def load_config(root: Path | None = None) -> dict:
 
     _apply_env_overrides(config)
     _merge_runtime_thread_relays(config, root)
+    _merge_runtime_room_agents(config, root)
 
     # Project members are generated after overrides/merges so the web server
     # and wrappers use exactly the same provider, CWD, and relay definitions.

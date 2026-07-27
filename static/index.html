@@ -4,12 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentchattr</title>
-    <link rel="stylesheet" href="/static/style.css?v=251">
+    <link rel="stylesheet" href="/static/style.css?v=252">
     <link rel="stylesheet" href="/static/sessions.css?v=223">
     <link rel="stylesheet" href="/static/jobs.css?v=223">
     <link rel="icon" href="/static/favicon.ico">
 </head>
 <body>
+    <main id="room-onboarding" class="room-onboarding active">
+        <section class="room-landing">
+            <div class="room-brand">agentchattr</div>
+            <h1>Conversations, with the right minds in the room.</h1>
+            <p>Create a focused room, invite the AI colleagues you need, and choose whether each one runs as a managed app session or attaches to your custom architecture.</p>
+            <button id="create-room-button" class="room-primary-button">Create a new room</button>
+        </section>
+        <section class="room-wizard hidden" aria-live="polite"></section>
+    </main>
     <div id="app">
         <header>
             <div class="header-left">
@@ -345,6 +354,7 @@
     <script src="/static/jobs.js?v=224"></script>
     <script src="/static/channels.js?v=225"></script>
     <script src="/static/rules-panel.js?v=223"></script>
-    <script src="/static/chat.js?v=268"></script>
+    <script src="/static/room-setup.js?v=1"></script>
+    <script src="/static/chat.js?v=269"></script>
 </body>
 </html>

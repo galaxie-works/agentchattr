@@ -1880,6 +1880,7 @@ function updateTyping(agent, active) {
 let pendingChannelSwitch = null;
 
 function applySettings(data) {
+    if (typeof RoomSetup !== 'undefined') RoomSetup.applySettings(data);
     if (data.title) {
         document.getElementById('room-title').textContent = data.title;
         document.title = data.title;

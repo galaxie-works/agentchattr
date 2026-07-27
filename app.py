@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import re as _re
+import subprocess
 import sys
 import threading
 import uuid
@@ -51,6 +53,8 @@ session_token: str = ""
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
     "title": "agentchattr",
+    "description": "",
+    "setup_complete": False,
     "username": "user",
     "font": "sans",
     "channels": ["general"],
@@ -65,6 +69,7 @@ MAX_CHANNELS = 8
 
 # Agent hats (persisted to data/hats.json)
 agent_hats: dict[str, str] = {}  # { agent_name: svg_string }
+room_workers: dict[str, subprocess.Popen] = {}
 
 
 def _hats_path() -> Path:
@@ -179,6 +184,56 @@ def _save_runtime_thread_relays(entries: dict) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps({"thread_relays": entries}, indent=2) + "\n", "utf-8")
     temporary.replace(path)
+
+
+def _room_agents_path() -> Path:
+    from thread_relays import runtime_relays_path
+    return runtime_relays_path(config, Path(__file__).parent).with_name("room_agents.json")
+
+
+def _save_room_agents(entries: dict) -> None:
+    path = _room_agents_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"agents": entries}, indent=2) + "\n", "utf-8")
+    temporary.replace(path)
+
+
+def _load_json_entries(path: Path, key: str) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+        entries = payload.get(key, payload) if isinstance(payload, dict) else {}
+        return entries if isinstance(entries, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) -> None:
+    """Start exactly one local worker selected by the room wizard."""
+    existing = room_workers.get(agent)
+    if existing and existing.poll() is None:
+        return
+
+    root = Path(__file__).parent
+    if kind == "thread_relay":
+        command = [sys.executable, "-u", "thread_relay.py", agent]
+        stdout_path = _settings_path().parent / f"{agent}-relay.stdout.log"
+        stderr_path = _settings_path().parent / f"{agent}-relay.stderr.log"
+        with open(stdout_path, "a", encoding="utf-8") as stdout, open(stderr_path, "a", encoding="utf-8") as stderr:
+            room_workers[agent] = subprocess.Popen(
+                command, cwd=root, stdout=stdout, stderr=stderr,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        return
+
+    # Wrappers deliberately get their own visible console: their provider is
+    # interactive and Windows console-input injection needs that live process.
+    command = [sys.executable, "wrapper.py", agent, *extra_args]
+    room_workers[agent] = subprocess.Popen(
+        command, cwd=root, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    )
 
 
 def _extract_agent_token(request: Request) -> str:
@@ -1636,6 +1691,97 @@ async def get_status():
 @app.get("/api/settings")
 async def get_settings():
     return room_settings
+
+
+@app.get("/api/room-setup")
+async def get_room_setup():
+    """Data for the first-run room wizard; no session discovery is performed."""
+    from room_setup import available_agents
+
+    targets: dict[str, list[dict]] = {}
+    for name, relay in _public_thread_relays().items():
+        provider = relay.get("provider")
+        if provider in {"codex", "claude"} and relay.get("target"):
+            targets.setdefault(provider, []).append({
+                "value": relay["target"], "label": relay.get("label") or name,
+            })
+    return JSONResponse({
+        "created": bool(room_settings.get("setup_complete")),
+        "room": {"title": room_settings.get("title", ""), "description": room_settings.get("description", "")},
+        "available_agents": available_agents(config),
+        "known_targets": targets,
+    })
+
+
+@app.post("/api/room-setup")
+async def create_room(request: Request):
+    """Persist the wizard selection, register its aliases, and launch workers."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    from room_setup import RoomSetupError, build_room_plan
+    try:
+        plan = build_room_plan(config, body, Path(__file__).parent)
+    except RoomSetupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    claude_resume = any(
+        launch.kind == "wrapper" and launch.extra_args[:1] == ("--resume",)
+        for launch in plan.launches
+    )
+    if claude_resume and body.get("confirm_claude_resume") is not True:
+        return JSONResponse({
+            "error": "Close the currently open Claude Code session, then confirm its resume before creating the room."
+        }, status_code=400)
+
+    # Persist user-selected runtime aliases without rewriting config.local.toml.
+    from thread_relays import ThreadRelays, runtime_relays_path
+    relay_path = runtime_relays_path(config, Path(__file__).parent)
+    saved_relays = _load_json_entries(relay_path, "thread_relays")
+    saved_relays.update(plan.thread_relays)
+    _save_runtime_thread_relays(saved_relays)
+    config.setdefault("thread_relays", {}).update(plan.thread_relays)
+
+    saved_agents = _load_json_entries(_room_agents_path(), "agents")
+    saved_agents.update(plan.room_agents)
+    _save_room_agents(saved_agents)
+    config.setdefault("agents", {}).update(plan.room_agents)
+
+    # Make new aliases routable in this running server before their worker
+    # calls /api/register. Thread relays materialize into normal agent entries.
+    base_agents = {
+        name for name, agent_cfg in config.get("agents", {}).items()
+        if not isinstance(agent_cfg, dict) or agent_cfg.get("type") != "thread_relay"
+    }
+    if plan.thread_relays:
+        relays = ThreadRelays(plan.thread_relays, base_agents, Path(__file__).parent)
+        relays.materialize(config)
+    if registry:
+        aliases = {
+            name: cfg for name, cfg in config.get("agents", {}).items()
+            if name in plan.room_agents or name in plan.thread_relays
+        }
+        registry.seed(aliases)
+        _on_registry_change()
+
+    room_settings["title"] = plan.title
+    room_settings["description"] = plan.description
+    room_settings["setup_complete"] = True
+    _save_settings()
+    await broadcast_settings()
+
+    started = []
+    for launch in plan.launches:
+        try:
+            _start_room_worker(launch.kind, launch.agent, launch.extra_args)
+            started.append({"agent": launch.agent, "mode": launch.kind})
+        except OSError as exc:
+            log.exception("Unable to start room worker %s", launch.agent)
+            return JSONResponse({"error": f"Room was saved but {launch.agent} could not start: {exc}"}, status_code=500)
+
+    return JSONResponse({"ok": True, "room": {"title": plan.title, "description": plan.description}, "started": started})
 
 
 @app.get("/api/thread-relays")

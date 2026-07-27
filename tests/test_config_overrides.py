@@ -188,6 +188,23 @@ class ConfigOverrideTests(unittest.TestCase):
 
         self.assertEqual(config["agents"]["codex-main"]["target"], "new-thread")
 
+    def test_runtime_room_agent_is_available_to_a_new_wrapper_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[server]\ndata_dir = './data'\n\n[agents.claude]\ncommand = 'claude'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "data").mkdir()
+            (root / "data" / "room_agents.json").write_text(
+                '{"agents":{"claude-room":{"provider":"claude","command":"claude","cwd":"C:/work"}}}',
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["agents"]["claude-room"]["provider"], "claude")
+
 
 class CliOverrideExtractionTests(unittest.TestCase):
     """apply_cli_overrides() extracts CLI flags into env vars.
