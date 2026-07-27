@@ -38,10 +38,15 @@ const RoomSetup = (() => {
     function inviteStep() {
         const cards = state.data.available_agents.map(agent => {
             const selected = state.selected.some(item => item.name === agent.name);
+            const icon = window.PROVIDER_ICONS?.paths?.[agent.provider];
+            const initial = escape((agent.label || agent.provider || '?').slice(0, 1).toUpperCase());
             return `<label class="room-agent-option ${selected ? 'selected' : ''}">
-                <input type="checkbox" data-agent-name="${escape(agent.name)}" ${selected ? 'checked' : ''}>
-                <span class="room-agent-dot" style="--agent-color:${escape(agent.color)}"></span>
-                <span><strong>${escape(agent.label)}</strong><small>${escape(agent.provider)}</small></span>
+                <input class="room-agent-native-check" type="checkbox" data-agent-name="${escape(agent.name)}" ${selected ? 'checked' : ''}>
+                <span class="room-agent-check" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path d="m3.25 8.25 3 3 6.5-6.5"/></svg></span>
+                <span class="room-agent-logo" style="--agent-color:${escape(agent.color)}">
+                    ${icon ? `<img src="${escape(icon)}" alt="" aria-hidden="true">` : `<b>${initial}</b>`}
+                </span>
+                <span class="room-agent-copy"><strong>${escape(agent.label)}</strong><small>${escape(agent.provider)}</small></span>
             </label>`;
         }).join('');
         return `<h2>Invite your colleagues</h2><p>Choose the AI colleagues that should join this room.</p>
