@@ -888,7 +888,10 @@ async def _handle_new_message(msg: dict):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
         if agents.is_available(target):
             prompt = _relay_prompt_for_target(target, relay_prompts) or custom_prompt
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=prompt)
+            await agents.trigger(
+                target, message=chat_msg, channel=channel, prompt=prompt,
+                message_id=msg.get("id"),
+            )
 
 
 # --- broadcasting ---
@@ -1579,8 +1582,14 @@ async def api_send(request: Request):
     if not text:
         return JSONResponse({"error": "text is required"}, status_code=400)
     channel = body.get("channel", "general")
+    reply_to = body.get("reply_to")
+    if reply_to is not None:
+        try:
+            reply_to = int(reply_to)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "reply_to must be an integer"}, status_code=400)
 
-    msg = store.add(sender, text, channel=channel)
+    msg = store.add(sender, text, channel=channel, reply_to=reply_to)
     return JSONResponse(msg)
 
 

@@ -171,6 +171,27 @@ message tool and which teammate names it can address. AgentChattr provides the
 room correlation and isolation; it cannot attach to an arbitrary already-open
 Codex Desktop or Claude thread.
 
+### Relay a room mention to one Codex thread
+
+For an explicit local Codex thread, use a `thread_relays` entry instead of a
+normal Codex wrapper. It creates a dedicated room member whose worker resumes
+only the configured thread through `codex exec resume`, then posts that
+thread's final answer back to the originating room message.
+
+```toml
+[thread_relays.codex-main]
+thread_id = "019fa400-ed55-73e1-9209-08b172015054"
+cwd = "C:\\dev"
+label = "Codex · Main thread"
+```
+
+Start it with `python thread_relay.py codex-main`, then address
+`@codex-main` in the room. The relay uses `--sandbox read-only`; it never
+accepts a thread ID from a chat message, scans provider session storage, or
+silently grants write access. It keeps the source message ID and sends the
+answer with `reply_to`, so downstream `@claude-*` mentions still use the
+normal room router.
+
 ### Channels
 Conversations are organized into channels (like Slack). The default channel is `#general`. Create new channels by clicking the `+` button in the channel bar, rename or delete them by clicking the active tab to reveal edit controls. Channels persist across server restarts.
 

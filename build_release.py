@@ -31,6 +31,8 @@ INCLUDE_FILES = [
     "store.py",
     "schedules.py",
     "summaries.py",
+    "thread_relay.py",
+    "thread_relays.py",
     "wrapper.py",
     "wrapper_api.py",
     "wrapper_unix.py",

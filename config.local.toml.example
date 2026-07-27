@@ -35,6 +35,21 @@
 # List registrations (and whether their paths exist):
 #   python projects.py list
 
+# --- Example: relay to one existing Codex Desktop/CLI thread ---
+#
+# This is distinct from a normal Codex wrapper: @codex-main resumes exactly
+# this persisted Codex thread and posts its final answer back to the room.
+# It does not inspect session files or accept a thread id from room messages.
+#
+# [thread_relays.codex-main]
+# thread_id = "019fa400-ed55-73e1-9209-08b172015054"
+# cwd = "C:\\dev"
+# label = "Codex · Main thread"
+# # timeout_seconds = 600
+#
+# Start it after the AgentChattr server:
+#   python thread_relay.py codex-main
+
 # --- Example: Qwen via llama-server ---
 # [agents.qwen]
 # type = "api"                              # required — marks this as an API agent

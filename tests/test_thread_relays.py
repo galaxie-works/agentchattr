@@ -1,0 +1,88 @@
+"""Tests for explicit persisted-Codex-thread relay configuration and parsing."""
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from thread_relay import build_turn_prompt, extract_final_message, run_turn
+from thread_relays import ThreadRelay, ThreadRelays, materialize_thread_relays
+
+
+THREAD_ID = "019fa400-ed55-73e1-9209-08b172015054"
+
+
+class ThreadRelayConfigTests(unittest.TestCase):
+    def test_materializes_a_distinct_routable_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {
+                "agents": {"codex": {"command": "codex", "cwd": "."}},
+                "thread_relays": {
+                    "codex-main": {
+                        "thread_id": THREAD_ID,
+                        "cwd": "workspace",
+                        "label": "Main Codex",
+                    },
+                },
+            }
+            relays = materialize_thread_relays(config, root)
+
+        self.assertEqual(relays.names, ["codex-main"])
+        self.assertEqual(config["agents"]["codex-main"]["type"], "thread_relay")
+        self.assertEqual(config["agents"]["codex-main"]["thread_id"], THREAD_ID)
+        self.assertEqual(config["agents"]["codex-main"]["cwd"], str((root / "workspace").resolve()))
+
+    def test_rejects_bad_thread_id(self):
+        with self.assertRaisesRegex(ValueError, "UUID"):
+            ThreadRelays({"codex-main": {"thread_id": "codex://threads/nope"}}, set(), ROOT)
+
+    def test_rejects_conflicting_agent_name(self):
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            ThreadRelays({"codex": {"thread_id": THREAD_ID}}, {"codex"}, ROOT)
+
+
+class ThreadRelayWorkerTests(unittest.TestCase):
+    def test_turn_prompt_preserves_correlation_and_untrusted_text(self):
+        prompt = build_turn_prompt({"channel": "general", "message_id": 42, "text": "@codex-main hi"})
+        self.assertIn("#general, message #42", prompt)
+        self.assertIn("@codex-main hi", prompt)
+
+    def test_extracts_only_the_last_completed_agent_message(self):
+        stdout = "\n".join([
+            '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
+            '{"type":"item.completed","item":{"type":"command_execution","command":"dir"}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"last"}}',
+        ])
+        self.assertEqual(extract_final_message(stdout), "last")
+
+    def test_run_turn_resumes_only_the_configured_thread_in_read_only_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = ThreadRelay(
+                name="codex-main", thread_id=THREAD_ID, cwd=Path(tmp), command="codex",
+                label="Main", color="#10a37f", timeout_seconds=30,
+            )
+            completed = SimpleNamespace(
+                stdout='{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n',
+                stderr="", returncode=0,
+            )
+            with mock.patch("thread_relay.shutil.which", return_value="C:/bin/codex"), \
+                 mock.patch("thread_relay.subprocess.run", return_value=completed) as run:
+                answer, error = run_turn(relay, "relay prompt")
+
+        self.assertEqual((answer, error), ("ok", ""))
+        args = run.call_args.args[0]
+        self.assertEqual(args[:7], [
+            "C:/bin/codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "resume",
+        ])
+        self.assertEqual(args[7], THREAD_ID)
+
+
+if __name__ == "__main__":
+    unittest.main()

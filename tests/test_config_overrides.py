@@ -148,6 +148,25 @@ class ConfigOverrideTests(unittest.TestCase):
         self.assertEqual(config["agents"]["codex-demo"]["cwd"], str((root / "workspace").resolve()))
         self.assertEqual(config["relays"]["demo-codex"]["agent"], "codex-demo")
 
+    def test_local_thread_relay_is_merged_and_materialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[agents.codex]\ncommand = 'codex'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "config.local.toml").write_text(
+                "[thread_relays.codex-main]\n"
+                "thread_id = '019fa400-ed55-73e1-9209-08b172015054'\n"
+                "cwd = './workspace'\n",
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["agents"]["codex-main"]["type"], "thread_relay")
+        self.assertEqual(config["agents"]["codex-main"]["thread_id"], "019fa400-ed55-73e1-9209-08b172015054")
+
 
 class CliOverrideExtractionTests(unittest.TestCase):
     """apply_cli_overrides() extracts CLI flags into env vars.
