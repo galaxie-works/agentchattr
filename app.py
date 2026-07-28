@@ -1073,7 +1073,7 @@ async def _handle_new_message(msg: dict):
         or is_agent_continue
     )
 
-    if not suppress_broadcast:
+    if not suppress_broadcast and not msg.get("_routing_replay"):
         await broadcast(msg)
 
     # If the raw slash command was persisted (MCP path), silently remove it.
@@ -1090,9 +1090,7 @@ async def _handle_new_message(msg: dict):
         if sender in known_agents:
             store.add("system", f"Loop guard: only humans can /continue. {sender} tried to self-resume.", channel=channel)
             return
-        router.continue_routing(channel)
-        store.add("system", f"Routing resumed by {sender}.", channel=channel)
-        await broadcast_status()
+        await _resume_agent_conversation(channel, sender)
         return
 
     if stripped == "/roastreview":
@@ -1195,7 +1193,7 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
-    raw_targets = router.get_targets(sender, text, channel)
+    raw_targets = router.get_targets(sender, text, channel, msg.get("id"))
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
@@ -1252,6 +1250,37 @@ async def _handle_new_message(msg: dict):
                 target, message=chat_msg, channel=channel, prompt=prompt,
                 message_id=msg.get("id"),
             )
+
+
+async def _resume_agent_conversation(channel: str, sender: str) -> None:
+    """Unpause routing and replay only the agent message blocked by the guard."""
+    pending = router.continue_routing(channel)
+    if pending:
+        message_id = pending.get("message_id")
+        suffix = f" from message #{message_id}" if message_id is not None else ""
+        store.add(
+            "system",
+            f"Resuming agent conversation{suffix}...",
+            msg_type="system",
+            channel=channel,
+        )
+        await broadcast_status()
+        await _handle_new_message({
+            "id": message_id,
+            "sender": pending["sender"],
+            "text": pending["text"],
+            "type": "chat",
+            "channel": channel,
+            "_routing_replay": True,
+        })
+        return
+    store.add(
+        "system",
+        f"Routing resumed by {sender}; there was no blocked agent message to replay.",
+        msg_type="system",
+        channel=channel,
+    )
+    await broadcast_status()
 
 
 # --- broadcasting ---
@@ -1517,9 +1546,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         await broadcast_clear(channel=channel)
                         continue
                     if cmd == "/continue":
-                        router.continue_routing()
-                        store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)
-                        await broadcast_status()
+                        await _resume_agent_conversation(channel, sender)
                         continue
                     # Broadcast slash commands — expand without storing the raw command.
                     # _handle_new_message will store the expanded version.

@@ -21,6 +21,7 @@ class Router:
                 "hop_count": 0,
                 "paused": False,
                 "guard_emitted": False,
+                "pending": None,
             }
         return self._channels[channel]
 
@@ -50,7 +51,13 @@ class Router:
     def _is_agent(self, sender: str) -> bool:
         return sender.lower() in self.agent_names
 
-    def get_targets(self, sender: str, text: str, channel: str = "general") -> list[str]:
+    def get_targets(
+        self,
+        sender: str,
+        text: str,
+        channel: str = "general",
+        message_id: int | None = None,
+    ) -> list[str]:
         """Determine which agents should receive this message."""
         ch = self._get_ch(channel)
         mentions = self.parse_mentions(text)
@@ -60,6 +67,7 @@ class Router:
             ch["hop_count"] = 0
             ch["paused"] = False
             ch["guard_emitted"] = False
+            ch["pending"] = None
             if not mentions:
                 if self.default_mention in ("both", "all"):
                     return list(self.agent_names)
@@ -77,16 +85,24 @@ class Router:
             ch["hop_count"] += 1
             if ch["hop_count"] > self.max_hops:
                 ch["paused"] = True
+                ch["pending"] = {
+                    "sender": sender,
+                    "text": text,
+                    "message_id": message_id,
+                }
                 return []
             # Don't route back to self
             return [m for m in mentions if m != sender]
 
     def continue_routing(self, channel: str = "general"):
-        """Resume after loop guard pause."""
+        """Resume after loop guard pause and return its blocked message."""
         ch = self._get_ch(channel)
+        pending = ch["pending"]
         ch["hop_count"] = 0
         ch["paused"] = False
         ch["guard_emitted"] = False
+        ch["pending"] = None
+        return pending
 
     def is_paused(self, channel: str = "general") -> bool:
         return self._get_ch(channel)["paused"]

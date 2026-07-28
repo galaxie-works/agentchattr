@@ -43,8 +43,22 @@ class RelayRouteTests(unittest.TestCase):
             ["claude", "codex"], default_mention="none", max_hops=1, aliases=self.routes.aliases
         )
         self.assertEqual(router.get_targets("claude", "@codex-review please review"), ["codex"])
-        self.assertEqual(router.get_targets("codex", "@claude follow up"), [])
+        self.assertEqual(router.get_targets("codex", "@claude follow up", message_id=42), [])
         self.assertTrue(router.is_paused())
+        self.assertEqual(router.continue_routing(), {
+            "sender": "codex",
+            "text": "@claude follow up",
+            "message_id": 42,
+        })
+        self.assertFalse(router.is_paused())
+
+    def test_human_message_discards_a_stale_blocked_agent_turn(self):
+        router = Router(["claude", "codex"], default_mention="none", max_hops=1)
+        self.assertEqual(router.get_targets("claude", "@codex first"), ["codex"])
+        self.assertEqual(router.get_targets("codex", "@claude blocked", message_id=8), [])
+
+        self.assertEqual(router.get_targets("user", "@claude new direction"), ["claude"])
+        self.assertIsNone(router.continue_routing())
 
 
 if __name__ == "__main__":
