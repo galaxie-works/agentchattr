@@ -104,7 +104,6 @@ temperature = 1.0
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"
-max_agent_hops = 4
 
 # Native teammate relays are optional. Add these to config.local.toml so
 # machine-specific teammate names never enter source control:

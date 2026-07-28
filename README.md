@@ -538,7 +538,7 @@ temperature = 1.0
 
 [routing]
 default = "none"            # "none" = only @mentions trigger agents
-max_agent_hops = 4          # pause after N agent-to-agent messages
+# Agent-to-agent conversations are unrestricted. There is no hop limit.
 
 [mcp]
 http_port = 8200            # MCP streamable-http (Claude Code, Codex)

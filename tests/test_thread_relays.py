@@ -11,7 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from thread_relay import build_turn_prompt, extract_final_message, run_turn
+from thread_relay import (
+    build_turn_prompt,
+    capture_workspace_state,
+    evidence_since,
+    extract_final_message,
+    run_turn,
+)
 from thread_relays import ThreadRelay, ThreadRelays, materialize_thread_relays
 
 
@@ -67,6 +73,9 @@ class ThreadRelayWorkerTests(unittest.TestCase):
         prompt = build_turn_prompt({"channel": "general", "message_id": 42, "text": "@codex-main\nhi"})
         self.assertTrue(prompt.startswith("ROOM MESSAGE #42 in #general: @codex-main hi."))
         self.assertNotIn("\n", prompt)
+        self.assertIn("there is no background task", prompt)
+        self.assertIn("execute it during this invocation", prompt)
+        self.assertIn("new commit", prompt)
 
     def test_extracts_only_the_last_completed_agent_message(self):
         stdout = "\n".join([
@@ -118,6 +127,25 @@ class ThreadRelayWorkerTests(unittest.TestCase):
             "C:/bin/claude", "--print", "--output-format", "json", "--resume", THREAD_ID,
             "--dangerously-skip-permissions", "relay prompt",
         ])
+
+    def test_evidence_contains_only_changes_made_during_the_turn(self):
+        before = {
+            "head": "a" * 40,
+            "files": {"existing.py": "old", "untouched.py": "same"},
+        }
+        after = {
+            "head": "b" * 40,
+            "files": {"existing.py": "new", "untouched.py": "same", "new.py": "hash"},
+        }
+        self.assertEqual(evidence_since(before, after), [
+            {"kind": "commit", "value": "b" * 40},
+            {"kind": "changed_file", "value": "existing.py"},
+            {"kind": "changed_file", "value": "new.py"},
+        ])
+
+    def test_workspace_snapshot_is_empty_outside_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(capture_workspace_state(Path(tmp)), {"head": "", "files": {}})
 
 
 if __name__ == "__main__":

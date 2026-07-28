@@ -41,6 +41,7 @@ from provider_preflight import (
     preflight_blockers,
     trust_kind,
 )
+from work_evidence import classify_work_status
 
 log = logging.getLogger(__name__)
 
@@ -633,8 +634,6 @@ def configure(cfg: dict, session_token: str = ""):
     schedules = ScheduleStore(str(Path(data_dir) / "schedules.json"))
     schedules.on_change(_on_schedule_change)
 
-    max_hops = cfg.get("routing", {}).get("max_agent_hops", 4)
-
     # Registry: single source of truth for all live agent state
     registry = RuntimeRegistry(data_dir=data_dir)
     registry.seed(cfg.get("agents", {}))
@@ -647,7 +646,6 @@ def configure(cfg: dict, session_token: str = ""):
     router = Router(
         agent_names=agent_names,
         default_mention=cfg.get("routing", {}).get("default", "none"),
-        max_hops=max_hops,
         online_checker=lambda: set(registry.get_active_names()) if registry else set(),
         aliases=relay_routes.aliases,
     )
@@ -668,10 +666,6 @@ def configure(cfg: dict, session_token: str = ""):
 
     _load_settings()
     _load_hats()
-
-    # Apply saved loop guard setting
-    if "max_agent_hops" in room_settings:
-        router.max_hops = room_settings["max_agent_hops"]
 
     # Background thread: check for wrapper recovery flag files
     _data_dir = Path(data_dir)
@@ -1065,7 +1059,7 @@ async def _handle_new_message(msg: dict):
     is_agent_session_draft = bool(draft_match and sender in known_agents)
     is_hidden_session_request = msg_type == "session_request"
 
-    is_agent_continue = (stripped == "/continue" and sender in known_agents)
+    is_agent_continue = False
     suppress_broadcast = (
         is_broadcast_cmd
         or is_hidden_session_request
@@ -1087,10 +1081,12 @@ async def _handle_new_message(msg: dict):
 
     # Check for slash commands — use stripped text (sans @mentions)
     if stripped == "/continue":
-        if sender in known_agents:
-            store.add("system", f"Loop guard: only humans can /continue. {sender} tried to self-resume.", channel=channel)
-            return
-        await _resume_agent_conversation(channel, sender)
+        store.add(
+            "system",
+            "Routing is unrestricted; /continue is no longer needed.",
+            msg_type="system",
+            channel=channel,
+        )
         return
 
     if stripped == "/roastreview":
@@ -1193,6 +1189,11 @@ async def _handle_new_message(msg: dict):
                            "errors": ["Invalid JSON in session block"], "valid": False},
             )
 
+    # A status claim without a repository checkpoint is deliberately visible,
+    # but cannot wake another agent or advance a coordination chain.
+    if msg_type == "unverified_work_status":
+        return
+
     raw_targets = router.get_targets(sender, text, channel, msg.get("id"))
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
@@ -1203,18 +1204,6 @@ async def _handle_new_message(msg: dict):
         else:
             targets.append(t)
     targets = list(dict.fromkeys(targets))  # dedupe, preserve order
-
-    if router.is_paused(channel):
-        # Only emit the loop guard notice once per pause
-        if not router.is_guard_emitted(channel):
-            router.set_guard_emitted(channel)
-            store.add(
-                "system",
-                f"Loop guard: {router.max_hops} agent-to-agent hops reached. "
-                "Type /continue to resume.",
-                channel=channel
-            )
-        return
 
     # Build a readable message string for the wake prompt. A configured relay
     # changes only the prompt delivered to its own agent; it never lets the
@@ -1253,30 +1242,10 @@ async def _handle_new_message(msg: dict):
 
 
 async def _resume_agent_conversation(channel: str, sender: str) -> None:
-    """Unpause routing and replay only the agent message blocked by the guard."""
-    pending = router.continue_routing(channel)
-    if pending:
-        message_id = pending.get("message_id")
-        suffix = f" from message #{message_id}" if message_id is not None else ""
-        store.add(
-            "system",
-            f"Resuming agent conversation{suffix}...",
-            msg_type="system",
-            channel=channel,
-        )
-        await broadcast_status()
-        await _handle_new_message({
-            "id": message_id,
-            "sender": pending["sender"],
-            "text": pending["text"],
-            "type": "chat",
-            "channel": channel,
-            "_routing_replay": True,
-        })
-        return
+    """Backwards-compatible response for historic /continue commands."""
     store.add(
         "system",
-        f"Routing resumed by {sender}; there was no blocked agent message to replay.",
+        "Routing is unrestricted; /continue is no longer needed.",
         msg_type="system",
         channel=channel,
     )
@@ -1545,9 +1514,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         store.clear(channel=channel)
                         await broadcast_clear(channel=channel)
                         continue
-                    if cmd == "/continue":
-                        await _resume_agent_conversation(channel, sender)
-                        continue
                     # Broadcast slash commands — expand without storing the raw command.
                     # _handle_new_message will store the expanded version.
                     if cmd in ("/hatmaking", "/artchallenge", "/roastreview", "/poetry"):
@@ -1681,14 +1647,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     room_settings["username"] = new["username"].strip() or "user"
                 if "font" in new and new["font"] in ("mono", "serif", "sans"):
                     room_settings["font"] = new["font"]
-                if "max_agent_hops" in new:
-                    try:
-                        hops = int(new["max_agent_hops"])
-                        hops = max(1, min(hops, 50))
-                        room_settings["max_agent_hops"] = hops
-                        router.max_hops = hops
-                    except (ValueError, TypeError):
-                        pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
                 if "rules_refresh_interval" in new:
@@ -1976,7 +1934,19 @@ async def api_send(request: Request):
         except (TypeError, ValueError):
             return JSONResponse({"error": "reply_to must be an integer"}, status_code=400)
 
-    msg = store.add(sender, text, channel=channel, reply_to=reply_to)
+    msg_type, metadata = classify_work_status(
+        text,
+        body.get("workspace"),
+        body.get("evidence"),
+    )
+    msg = store.add(
+        sender,
+        text,
+        channel=channel,
+        reply_to=reply_to,
+        msg_type=msg_type,
+        metadata=metadata,
+    )
     return JSONResponse(msg)
 
 

@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
+from work_evidence import classify_work_status, verify_work_evidence
 
 log = logging.getLogger(__name__)
 
@@ -198,6 +199,8 @@ def chat_send(
     reply_to: int = -1,
     channel: str = "",
     job_id: int = 0,
+    workspace: str = "",
+    evidence: list[dict] | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
@@ -214,8 +217,11 @@ def chat_send(
     multiple-choice question, provide the options so the user can respond with
     a single click:
       chat_send(sender="claude", message="Should I merge?", choices=["Yes", "No", "Show diff first"])
-    For normal messages without choices, pass choices=[]:
-      chat_send(sender="claude", message="Done.", choices=[])"""
+    For normal messages without choices, pass choices=[].
+    Work/progress claims are checked before they can trigger another agent:
+    provide workspace plus evidence=[{"kind":"commit","value":"<sha>"}]
+    for a completed/QA claim, or evidence=[{"kind":"changed_file","value":"src/file.py"}]
+    for a live checkpoint. Use chat_report_progress when possible."""
     sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
     if err:
         return err
@@ -342,6 +348,14 @@ def chat_send(
         msg_type = "decision"
         metadata = {"choices": clean_choices, "resolved": False}
 
+    work_type, work_metadata = classify_work_status(message.strip(), workspace, evidence or [])
+    if clean_choices:
+        # A decision remains a decision. A claimed delivery must be sent as a
+        # normal status update so its evidence cannot be hidden in a card.
+        work_metadata = None
+    elif work_metadata:
+        metadata = work_metadata
+        msg_type = work_type
     msg = store.add(sender, message.strip(), attachments=attachments,
                     reply_to=reply_id, channel=channel,
                     msg_type=msg_type, metadata=metadata)
@@ -349,6 +363,56 @@ def chat_send(
     with _presence_lock:
         _presence[sender] = time.time()
     return f"Sent (id={msg['id']})"
+
+
+def chat_report_progress(
+    sender: str,
+    summary: str,
+    workspace: str,
+    evidence: list[dict],
+    channel: str = "",
+    reply_to: int = -1,
+    ctx: Context | None = None,
+) -> str:
+    """Post a verified repository checkpoint for development coordination.
+
+    A checkpoint needs workspace (an existing Git repository) and evidence.
+    Use a commit record for a completed/QA update:
+      evidence=[{"kind":"commit","value":"abc1234"}]
+    Or use a changed_file record only for work-in-progress:
+      evidence=[{"kind":"changed_file","value":"src/app.py"}]
+    Unverified progress claims must not be posted as execution status.
+    """
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    summary = (summary or "").strip()
+    if not summary:
+        return "Error: summary is required."
+    msg_type, metadata = classify_work_status(summary, workspace, evidence)
+    if msg_type == "chat":
+        ok, verified, reason = verify_work_evidence(workspace, evidence)
+        metadata = {
+            "work_status": True,
+            "verified": ok,
+            "workspace": workspace,
+            "evidence": verified,
+            "reason": reason,
+        }
+        msg_type = "verified_work_status" if ok else "unverified_work_status"
+    if msg_type != "verified_work_status":
+        reason = (metadata or {}).get("reason", "missing repository evidence")
+        return f"Error: progress not posted: {reason}."
+    if not channel:
+        channel = "general"
+    reply_id = reply_to if reply_to >= 0 else None
+    if reply_id is not None and store.get_by_id(reply_id) is None:
+        return f"Message #{reply_to} not found."
+    msg = store.add(sender, summary, reply_to=reply_id, channel=channel,
+                    msg_type=msg_type, metadata=metadata)
+    _update_cursor(sender, [msg], channel)
+    _touch_presence(sender)
+    return f"Verified checkpoint posted (id={msg['id']})"
 
 
 def chat_propose_job(
@@ -928,7 +992,7 @@ def chat_summary(
 
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
-    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_report_progress,
 ]
 
 

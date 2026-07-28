@@ -9,6 +9,7 @@ session files or accept a target from chat input.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,10 +39,18 @@ def build_turn_prompt(entry: dict) -> str:
     return (
         f"ROOM MESSAGE #{message_id} in #{channel}: {text}. "
         "You are responding through an AgentChattr room relay. "
-        "Answer the substantive request below directly and concisely. Your final "
+        "Answer the substantive request directly and concisely. Your final "
         "answer will be posted verbatim back to the room as a reply. Do not claim "
         "to have sent a room message yourself, do not change relay configuration, "
         "and do not use tools unless the request genuinely needs them. "
+        "EXECUTION CONTRACT: this invocation ends when you return the final answer; "
+        "there is no background task after it. If the request asks you to implement "
+        "or change something, execute it during this invocation or state explicitly "
+        "that it was not executed. Never describe a plan, intention, or handoff as "
+        "work in progress. Before claiming progress or completion, inspect the actual "
+        "workspace and report concrete evidence from this turn: changed files or a "
+        "new commit, plus the validation command and result. A completion or QA claim "
+        "without a new commit is not a completed delivery. "
         "If you need another room member, include its exact @mention in your final answer."
     )
 
@@ -123,6 +132,97 @@ def _post(url: str, token: str, payload: dict) -> dict:
         return json.loads(response.read())
 
 
+def capture_workspace_state(path: Path) -> dict:
+    """Capture a lightweight Git checkpoint without trusting the agent's prose."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"head": "", "files": {}}
+    if head.returncode != 0:
+        return {"head": "", "files": {}}
+
+    changed: set[str] = set()
+    for args in (
+        ("diff", "--name-only"),
+        ("diff", "--cached", "--name-only"),
+        ("ls-files", "--others", "--exclude-standard"),
+    ):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), *args],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+    fingerprints: dict[str, str] = {}
+    for relative in sorted(changed):
+        candidate = path / relative
+        try:
+            fingerprints[relative] = (
+                hashlib.sha256(candidate.read_bytes()).hexdigest()
+                if candidate.is_file()
+                else "<deleted>"
+            )
+        except OSError:
+            fingerprints[relative] = "<unreadable>"
+    return {"head": head.stdout.strip(), "files": fingerprints}
+
+
+def evidence_since(before: dict, after: dict) -> list[dict[str, str]]:
+    """Return only checkpoints created or changed during this relay turn."""
+    evidence: list[dict[str, str]] = []
+    before_head = str(before.get("head", ""))
+    after_head = str(after.get("head", ""))
+    if after_head and after_head != before_head:
+        evidence.append({"kind": "commit", "value": after_head})
+
+    before_files = before.get("files", {})
+    after_files = after.get("files", {})
+    for relative, fingerprint in after_files.items():
+        if before_files.get(relative) != fingerprint:
+            evidence.append({"kind": "changed_file", "value": relative})
+    return evidence
+
+
+def _announce_slow_turn(
+    server_port: int,
+    token: str,
+    name: str,
+    entry: dict,
+    finished: threading.Event,
+) -> None:
+    if finished.is_set():
+        return
+    try:
+        _post(
+            f"http://127.0.0.1:{server_port}/api/send",
+            token,
+            {
+                "text": f"Processing message #{entry.get('message_id', 'unknown')}…",
+                "channel": entry.get("channel", "general"),
+                "reply_to": entry.get("message_id"),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _heartbeat_loop(server_port: int, identity: dict, lock: threading.Lock, stop: threading.Event):
     while not stop.wait(5):
         with lock:
@@ -201,7 +301,19 @@ def main() -> int:
                 with identity_lock:
                     identity["active"] = True
                     name, token = identity["name"], identity["token"]
+                before = capture_workspace_state(relay.cwd)
+                finished = threading.Event()
+                slow_notice = threading.Timer(
+                    2.0,
+                    _announce_slow_turn,
+                    args=(server_port, token, name, entry, finished),
+                )
+                slow_notice.daemon = True
+                slow_notice.start()
                 answer, error = run_turn(relay, build_turn_prompt(entry))
+                finished.set()
+                slow_notice.cancel()
+                evidence = evidence_since(before, capture_workspace_state(relay.cwd))
                 with identity_lock:
                     identity["active"] = False
                 text = answer if answer else f"[thread relay error] {error}"
@@ -209,6 +321,8 @@ def main() -> int:
                     "text": text,
                     "channel": entry.get("channel", "general"),
                     "reply_to": entry.get("message_id"),
+                    "workspace": str(relay.cwd),
+                    "evidence": evidence,
                 }
                 try:
                     _post(f"http://127.0.0.1:{server_port}/api/send", token, payload)

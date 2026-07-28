@@ -1,4 +1,4 @@
-"""Message routing based on @mentions with per-channel loop guard."""
+"""Message routing based on @mentions."""
 
 import re
 
@@ -9,21 +9,11 @@ class Router:
         self.agent_names = set(n.lower() for n in agent_names)
         self.aliases = {name.lower(): target.lower() for name, target in (aliases or {}).items()}
         self.default_mention = default_mention
+        # Retained as a no-op constructor parameter so older integrations do
+        # not break. Agent conversations are intentionally unrestricted.
         self.max_hops = max_hops
         self._online_checker = online_checker  # callable() -> set of online agent names
-        # Per-channel state: { channel: { hop_count, paused, guard_emitted } }
-        self._channels: dict[str, dict] = {}
         self._build_pattern()
-
-    def _get_ch(self, channel: str) -> dict:
-        if channel not in self._channels:
-            self._channels[channel] = {
-                "hop_count": 0,
-                "paused": False,
-                "guard_emitted": False,
-                "pending": None,
-            }
-        return self._channels[channel]
 
     def _build_pattern(self):
         # Sort longest-first so "gemini-2" is tried before "gemini"
@@ -59,15 +49,9 @@ class Router:
         message_id: int | None = None,
     ) -> list[str]:
         """Determine which agents should receive this message."""
-        ch = self._get_ch(channel)
         mentions = self.parse_mentions(text)
 
         if not self._is_agent(sender):
-            # Human message resets hop counter and unpauses
-            ch["hop_count"] = 0
-            ch["paused"] = False
-            ch["guard_emitted"] = False
-            ch["pending"] = None
             if not mentions:
                 if self.default_mention in ("both", "all"):
                     return list(self.agent_names)
@@ -76,42 +60,24 @@ class Router:
                 return [self.default_mention]
             return mentions
         else:
-            # Agent message: blocked while loop guard is active
-            if ch["paused"]:
-                return []
             # Only route if explicit @mention
             if not mentions:
-                return []
-            ch["hop_count"] += 1
-            if ch["hop_count"] > self.max_hops:
-                ch["paused"] = True
-                ch["pending"] = {
-                    "sender": sender,
-                    "text": text,
-                    "message_id": message_id,
-                }
                 return []
             # Don't route back to self
             return [m for m in mentions if m != sender]
 
     def continue_routing(self, channel: str = "general"):
-        """Resume after loop guard pause and return its blocked message."""
-        ch = self._get_ch(channel)
-        pending = ch["pending"]
-        ch["hop_count"] = 0
-        ch["paused"] = False
-        ch["guard_emitted"] = False
-        ch["pending"] = None
-        return pending
+        """Compatibility no-op: routing is never paused."""
+        return None
 
     def is_paused(self, channel: str = "general") -> bool:
-        return self._get_ch(channel)["paused"]
+        return False
 
     def is_guard_emitted(self, channel: str = "general") -> bool:
-        return self._get_ch(channel)["guard_emitted"]
+        return False
 
     def set_guard_emitted(self, channel: str = "general"):
-        self._get_ch(channel)["guard_emitted"] = True
+        return None
 
     def update_agents(self, names: list[str]):
         """Replace the agent name set and rebuild the mention regex."""

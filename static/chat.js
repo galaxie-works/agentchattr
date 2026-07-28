@@ -1895,9 +1895,6 @@ function applySettings(data) {
         document.body.classList.add('font-' + data.font);
         document.getElementById('setting-font').value = data.font;
     }
-    if (data.max_agent_hops !== undefined) {
-        document.getElementById('setting-hops').value = data.max_agent_hops;
-    }
     if (data.history_limit !== undefined) {
         document.getElementById('setting-history').value = String(data.history_limit);
     }
@@ -2009,7 +2006,6 @@ function clearChat() {
 function saveSettings() {
     const newUsername = document.getElementById('setting-username').value.trim();
     const newFont = document.getElementById('setting-font').value;
-    const newHops = document.getElementById('setting-hops').value;
     const histVal = document.getElementById('setting-history').value;
     const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal) || 50);
     const newContrast = document.getElementById('setting-contrast').value;
@@ -2021,7 +2017,6 @@ function saveSettings() {
             data: {
                 username: newUsername || 'user',
                 font: newFont,
-                max_agent_hops: parseInt(newHops) || 4,
                 history_limit: newHistory,
                 contrast: newContrast,
                 rules_refresh_interval: parseInt(newRulesRefresh) || 0,
@@ -2032,7 +2027,7 @@ function saveSettings() {
 
 function setupSettingsKeys() {
     // Auto-save on blur/Enter for text/number fields
-    for (const id of ['setting-username', 'setting-hops']) {
+    for (const id of ['setting-username']) {
         const el = document.getElementById(id);
         el.addEventListener('blur', () => saveSettings());
         el.addEventListener('keydown', (e) => {
@@ -2196,7 +2191,6 @@ const SLASH_COMMANDS = [
     { cmd: '/poetry sonnet', desc: 'Agents write a sonnet about the codebase', broadcast: true },
     { cmd: '/summary', desc: 'Summarize recent messages — tag an agent (e.g. /summary @claude)', broadcast: false, needsMention: true },
     { cmd: '/summarise', desc: 'Summarize recent messages — tag an agent (e.g. /summarise @claude)', broadcast: false, needsMention: true, hidden: true },
-    { cmd: '/continue', desc: 'Resume after loop guard pauses', broadcast: false },
     { cmd: '/clear', desc: 'Clear messages in current channel', broadcast: false },
 ];
 

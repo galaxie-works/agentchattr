@@ -38,27 +38,25 @@ class RelayRouteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RelayRoutes({"codex": {"agent": "codex", "teammate": "reviewer"}}, ["codex"])
 
-    def test_agent_reply_to_a_relay_alias_counts_toward_loop_guard(self):
+    def test_agent_reply_chains_are_unrestricted(self):
         router = Router(
             ["claude", "codex"], default_mention="none", max_hops=1, aliases=self.routes.aliases
         )
         self.assertEqual(router.get_targets("claude", "@codex-review please review"), ["codex"])
-        self.assertEqual(router.get_targets("codex", "@claude follow up", message_id=42), [])
-        self.assertTrue(router.is_paused())
-        self.assertEqual(router.continue_routing(), {
-            "sender": "codex",
-            "text": "@claude follow up",
-            "message_id": 42,
-        })
+        self.assertEqual(router.get_targets("codex", "@claude follow up", message_id=42), ["claude"])
+        self.assertFalse(router.is_paused())
+        self.assertIsNone(router.continue_routing())
         self.assertFalse(router.is_paused())
 
-    def test_human_message_discards_a_stale_blocked_agent_turn(self):
+    def test_many_agent_hops_never_pause(self):
         router = Router(["claude", "codex"], default_mention="none", max_hops=1)
-        self.assertEqual(router.get_targets("claude", "@codex first"), ["codex"])
-        self.assertEqual(router.get_targets("codex", "@claude blocked", message_id=8), [])
-
-        self.assertEqual(router.get_targets("user", "@claude new direction"), ["claude"])
-        self.assertIsNone(router.continue_routing())
+        for message_id in range(100):
+            sender, target = ("claude", "codex") if message_id % 2 == 0 else ("codex", "claude")
+            self.assertEqual(
+                router.get_targets(sender, f"@{target} continue", message_id=message_id),
+                [target],
+            )
+        self.assertFalse(router.is_paused())
 
 
 if __name__ == "__main__":
