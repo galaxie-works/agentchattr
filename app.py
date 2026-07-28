@@ -30,7 +30,6 @@ from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from claude_sessions import (
     active_sessions,
-    resume_target,
     room_resume_args,
     terminate_sessions,
 )
@@ -126,7 +125,7 @@ def _saved_room_preflight_targets() -> list[ProviderPreflightTarget]:
     for member in _current_room_members():
         provider = member["provider"]
         alias = member["agent"]
-        if member["mode"] == "custom" and provider == "codex":
+        if member["mode"] == "custom" and alias in config.get("thread_relays", {}):
             agent_cfg = config.get("thread_relays", {}).get(alias, {})
         else:
             agent_cfg = config.get("agents", {}).get(alias, {})
@@ -2148,9 +2147,11 @@ async def continue_room(room_id: str, request: Request):
             unavailable.append(provider)
             continue
         try:
-            if member["mode"] == "custom" and provider == "codex" and alias in config.get("thread_relays", {}):
+            if member["mode"] == "custom" and alias in config.get("thread_relays", {}):
                 _start_room_worker("thread_relay", alias)
             elif member["mode"] == "custom" and provider == "claude" and alias in config.get("agents", {}):
+                # Compatibility for rooms created before Claude custom targets
+                # were migrated to serialized print-mode relays.
                 agent_cfg = config.get("agents", {}).get(alias, {})
                 args = (*(full_control_args(provider, agent_cfg) or ()), *room_resume_args(member["id"]))
                 _start_room_worker("wrapper", alias, args)
@@ -2189,11 +2190,9 @@ async def create_room(request: Request):
         return preflight
 
     claude_resume_targets = {
-        target
-        for launch in plan.launches
-        if launch.kind == "wrapper"
-        for target in [resume_target(list(launch.extra_args))]
-        if target
+        str(relay.get("target", ""))
+        for relay in plan.thread_relays.values()
+        if relay.get("provider") == "claude" and relay.get("target")
     }
     live_claude_sessions = active_sessions()
     active_claude_targets = claude_resume_targets & set(live_claude_sessions)
@@ -2219,6 +2218,11 @@ async def create_room(request: Request):
     config.setdefault("thread_relays", {}).update(plan.thread_relays)
 
     saved_agents = _load_json_entries(_room_agents_path(), "agents")
+    for name in plan.thread_relays:
+        saved_agents.pop(name, None)
+        existing = config.get("agents", {}).get(name, {})
+        if isinstance(existing, dict) and existing.get("type") != "thread_relay":
+            config.get("agents", {}).pop(name, None)
     saved_agents.update(plan.room_agents)
     _save_room_agents(saved_agents)
     config.setdefault("agents", {}).update(plan.room_agents)
@@ -2642,7 +2646,13 @@ async def trigger_agent_silent(request: Request):
             targets = resolved
     for target in targets:
         if agents.is_available(target):
-            await agents.trigger(target, message=message, channel=channel, prompt=custom_prompt)
+            await agents.trigger(
+                target,
+                message=message,
+                channel=channel,
+                prompt=custom_prompt,
+                message_id=source_msg_id,
+            )
     return {"ok": True, "triggered": targets}
 
 

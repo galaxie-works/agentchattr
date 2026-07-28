@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from claude_sessions import room_resume_args
 from provider_preflight import full_control_args
 from thread_relays import validate_target
 
@@ -115,36 +114,19 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
         if provider in custom_providers:
             raise RoomSetupError(f"Choose only one custom {provider.title()} target per room.")
         custom_providers.add(provider)
-        if provider == "codex":
+        if provider in {"codex", "claude"}:
+            provider_cfg = config.get("agents", {}).get(name, {})
             thread_relays[alias] = {
-                "provider": "codex",
+                "provider": provider,
                 "singleton": True,
                 "target": target,
                 "cwd": str(cwd),
-                "label": f"Codex · {title}",
-                "command": str(config.get("agents", {}).get(name, {}).get("command", "codex")),
+                "label": f"{base['label']} · {title}",
+                "command": str(provider_cfg.get("command", provider)),
                 "color": base["color"],
                 "timeout_seconds": 600,
                 "full_control": True,
             }
             launches.append(LaunchSpec("thread_relay", alias))
-        else:
-            # Claude needs the wrapper, not the print-mode thread relay: the
-            # wrapper owns the resumed CLI process and injects AgentChattr MCP.
-            cfg = dict(config.get("agents", {}).get(name, {}))
-            cfg.update({
-                "provider": "claude",
-                "singleton": True,
-                "command": str(cfg.get("command", "claude")),
-                "cwd": str(cwd),
-                "label": f"Claude · {title}",
-                "color": base["color"],
-            })
-            room_agents[alias] = cfg
-            launches.append(LaunchSpec(
-                "wrapper",
-                alias,
-                (*(full_control_args(provider, cfg) or ()), *room_resume_args(target)),
-            ))
 
     return RoomPlan(title, description, room_agents, thread_relays, tuple(launches))

@@ -20,7 +20,6 @@ from claude_sessions import (
     room_resume_args,
 )
 from room_setup import RoomSetupError, available_agents, build_room_plan
-from provider_preflight import full_control_args
 
 
 CLAUDE_ID = "2105f2d0-351f-4e8b-bdd5-0668ec3112e4"
@@ -43,7 +42,7 @@ class RoomSetupPlanTests(unittest.TestCase):
         self.assertTrue(next(agent for agent in agents if agent["name"] == "claude")["resumable"])
         self.assertFalse(next(agent for agent in agents if agent["name"] == "gemini")["resumable"])
 
-    def test_builds_codex_thread_relay_and_resumed_claude_wrapper(self):
+    def test_builds_serialized_codex_and_claude_thread_relays(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             plan = build_room_plan(self.config, {
@@ -56,12 +55,13 @@ class RoomSetupPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.thread_relays["codex-room"]["target"], "saved-codex-thread")
         self.assertTrue(plan.thread_relays["codex-room"]["singleton"])
-        self.assertEqual(plan.room_agents["claude-room"]["cwd"], str(root.resolve()))
-        self.assertTrue(plan.room_agents["claude-room"]["singleton"])
+        self.assertEqual(plan.thread_relays["claude-room"]["target"], CLAUDE_ID)
+        self.assertEqual(plan.thread_relays["claude-room"]["cwd"], str(root.resolve()))
+        self.assertTrue(plan.thread_relays["claude-room"]["singleton"])
         self.assertIn((
-            "wrapper",
+            "thread_relay",
             "claude-room",
-            (*full_control_args("claude"), *room_resume_args(CLAUDE_ID)),
+            (),
         ), [
             (item.kind, item.agent, item.extra_args) for item in plan.launches
         ])

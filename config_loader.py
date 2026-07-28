@@ -144,6 +144,12 @@ def _merge_runtime_room_agents(config: dict, root: Path) -> None:
     agents = config.setdefault("agents", {})
     for name, agent_cfg in entries.items():
         if isinstance(agent_cfg, dict):
+            # A custom conversation may be migrated from the old persistent
+            # interactive wrapper to the serialized print-mode thread relay.
+            # The relay is authoritative and must not collide with its legacy
+            # room-agent record during materialization.
+            if name in config.get("thread_relays", {}):
+                continue
             agents[name] = agent_cfg
 
 

@@ -205,6 +205,29 @@ class ConfigOverrideTests(unittest.TestCase):
 
         self.assertEqual(config["agents"]["claude-room"]["provider"], "claude")
 
+    def test_runtime_thread_relay_supersedes_legacy_room_wrapper_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text(
+                "[server]\ndata_dir = './data'\n\n[agents.claude]\ncommand = 'claude'\ncwd = '.'\n",
+                encoding="utf-8",
+            )
+            (root / "data").mkdir()
+            (root / "data" / "thread_relays.json").write_text(
+                '{"thread_relays":{"claude-room":{"provider":"claude",'
+                '"target":"2105f2d0-351f-4e8b-bdd5-0668ec3112e4","cwd":"."}}}',
+                encoding="utf-8",
+            )
+            (root / "data" / "room_agents.json").write_text(
+                '{"agents":{"claude-room":{"provider":"claude","command":"claude","cwd":"C:/legacy"}}}',
+                encoding="utf-8",
+            )
+
+            config = config_loader.load_config(root)
+
+        self.assertEqual(config["agents"]["claude-room"]["type"], "thread_relay")
+        self.assertEqual(config["agents"]["claude-room"]["cwd"], str(root.resolve()))
+
 
 class CliOverrideExtractionTests(unittest.TestCase):
     """apply_cli_overrides() extracts CLI flags into env vars.
