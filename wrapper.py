@@ -300,40 +300,6 @@ def _apply_mcp_inject(
     return launch_args, inject_env, settings_path
 
 
-def _ensure_gemini_folder_trusted(project_dir: Path) -> None:
-    """Add project_dir as TRUST_FOLDER in ~/.gemini/trustedFolders.json.
-
-    Gemini CLI blocks ALL MCPs (including system-settings ones) for untrusted
-    folders. A more-specific TRUST_FOLDER entry overrides any parent-level
-    DO_NOT_TRUST rule, so we always write the exact cwd we're launching in.
-    Respects GEMINI_CLI_TRUSTED_FOLDERS_PATH env override if set.
-    """
-    trusted_path_env = os.environ.get("GEMINI_CLI_TRUSTED_FOLDERS_PATH", "")
-    if trusted_path_env:
-        trusted_file = Path(trusted_path_env)
-    else:
-        trusted_file = Path.home() / ".gemini" / "trustedFolders.json"
-
-    try:
-        data: dict = {}
-        if trusted_file.exists():
-            try:
-                data = json.loads(trusted_file.read_text("utf-8"))
-            except Exception:
-                data = {}
-
-        folder_key = str(project_dir)
-        if data.get(folder_key) == "TRUST_FOLDER":
-            return  # already trusted — nothing to do
-
-        data[folder_key] = "TRUST_FOLDER"
-        trusted_file.parent.mkdir(parents=True, exist_ok=True)
-        trusted_file.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
-        print(f"  Trusted folder for Gemini MCPs: {folder_key}")
-    except Exception as exc:
-        print(f"  Warning: could not update Gemini trusted folders: {exc}")
-
-
 def _build_provider_launch(
     agent: str,
     agent_cfg: dict,
@@ -590,6 +556,8 @@ def main():
     # A project member such as codex-website is registered under a unique room
     # identity but inherits Codex's provider-specific MCP launch behaviour.
     provider = str(agent_cfg.get("provider", agent)).strip().lower()
+    cwd = agent_cfg.get("cwd", ".")
+    project_dir = (ROOT / cwd).resolve()
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
     data_dir.mkdir(parents=True, exist_ok=True)
     worker_lock = None
@@ -603,17 +571,19 @@ def main():
             return
 
     if provider == "claude":
-        from claude_sessions import active_session_ids, reconcile_workspace_trust, resume_target
+        from claude_sessions import active_session_ids, resume_target
 
         target = resume_target(extra)
         if target and target in active_session_ids():
             print("  Error: the requested Claude Code session is still open.")
             print("  Close that session before resuming it through AgentChattr.")
             sys.exit(2)
-    cwd = agent_cfg.get("cwd", ".")
-    if provider == "claude" and not reconcile_workspace_trust(cwd):
-        print(f"  Error: Claude has not trusted the workspace {cwd}.")
-        print("  Open Claude Code in that directory once, accept workspace trust, then retry.")
+    from provider_preflight import trust_kind, workspace_is_trusted
+
+    provider_trust = trust_kind(provider, agent_cfg)
+    if provider_trust is not None and not workspace_is_trusted(provider_trust, project_dir):
+        print(f"  Error: {provider.title()} has not trusted the workspace {project_dir}.")
+        print("  Complete the visible AgentChattr provider preflight, then retry.")
         sys.exit(3)
     command = agent_cfg.get("command", agent)
     server_port = config.get("server", {}).get("port", 8300)
@@ -735,13 +705,6 @@ def main():
         print("  Install it first, then try again.")
         sys.exit(1)
     command = resolved
-
-    project_dir = (ROOT / cwd).resolve()
-
-    # Gemini: ensure the project directory is trusted so MCPs are allowed.
-    # Gemini blocks ALL MCPs for untrusted folders — even system-settings ones.
-    if provider == "gemini" or inject_cfg.get("mcp_inject") == "env":
-        _ensure_gemini_folder_trusted(project_dir)
 
     launch_args, env, inject_env, mcp_settings_path = _build_provider_launch(
         agent=provider,

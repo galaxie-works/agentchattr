@@ -20,6 +20,7 @@ from claude_sessions import (
     room_resume_args,
 )
 from room_setup import RoomSetupError, available_agents, build_room_plan
+from provider_preflight import full_control_args
 
 
 CLAUDE_ID = "2105f2d0-351f-4e8b-bdd5-0668ec3112e4"
@@ -57,9 +58,32 @@ class RoomSetupPlanTests(unittest.TestCase):
         self.assertTrue(plan.thread_relays["codex-room"]["singleton"])
         self.assertEqual(plan.room_agents["claude-room"]["cwd"], str(root.resolve()))
         self.assertTrue(plan.room_agents["claude-room"]["singleton"])
-        self.assertIn(("wrapper", "claude-room", room_resume_args(CLAUDE_ID)), [
+        self.assertIn((
+            "wrapper",
+            "claude-room",
+            (*full_control_args("claude"), *room_resume_args(CLAUDE_ID)),
+        ), [
             (item.kind, item.agent, item.extra_args) for item in plan.launches
         ])
+
+    def test_standard_cli_launches_use_provider_full_control_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = build_room_plan(self.config, {
+                "agents": [
+                    {"name": "claude", "mode": "standard"},
+                    {"name": "codex", "mode": "standard"},
+                ],
+            }, Path(tmp))
+
+        launches = {
+            item.agent: item.extra_args
+            for item in plan.launches
+        }
+        self.assertEqual(launches["claude"], ("--dangerously-skip-permissions",))
+        self.assertEqual(
+            launches["codex"],
+            ("--dangerously-bypass-approvals-and-sandbox",),
+        )
 
     def test_rejects_non_uuid_claude_target(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from claude_sessions import room_resume_args
+from provider_preflight import full_control_args
 from thread_relays import validate_target
 
 
@@ -86,7 +87,11 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
         base = available[name]
         mode = str(raw.get("mode", "standard")).strip().lower()
         if mode == "standard":
-            launches.append(LaunchSpec("wrapper", name))
+            agent_cfg = config.get("agents", {}).get(name, {})
+            if agent_cfg.get("type") == "api":
+                launches.append(LaunchSpec("api", name))
+            else:
+                launches.append(LaunchSpec("wrapper", name, full_control_args(name, agent_cfg) or ()))
             continue
         if mode != "custom" or not base["resumable"]:
             raise RoomSetupError(f"{base['label']} does not support linking an existing conversation.")
@@ -120,6 +125,7 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
                 "command": str(config.get("agents", {}).get(name, {}).get("command", "codex")),
                 "color": base["color"],
                 "timeout_seconds": 600,
+                "full_control": True,
             }
             launches.append(LaunchSpec("thread_relay", alias))
         else:
@@ -135,6 +141,10 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
                 "color": base["color"],
             })
             room_agents[alias] = cfg
-            launches.append(LaunchSpec("wrapper", alias, room_resume_args(target)))
+            launches.append(LaunchSpec(
+                "wrapper",
+                alias,
+                (*(full_control_args(provider, cfg) or ()), *room_resume_args(target)),
+            ))
 
     return RoomPlan(title, description, room_agents, thread_relays, tuple(launches))

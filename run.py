@@ -38,6 +38,13 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    if sys.platform == "win32":
+        from process_job import install_kill_on_close_job
+
+        if not install_kill_on_close_job():
+            logging.getLogger(__name__).warning(
+                "Windows process-tree ownership is unavailable; graceful shutdown cleanup remains active."
+            )
 
     # Parse flags for --help support; the actual env propagation happens via
     # the shared config_loader.apply_cli_overrides helper so run.py and the
@@ -58,7 +65,7 @@ def main():
     session_token = secrets.token_hex(32)
 
     # Configure the FastAPI app (creates shared store)
-    from app import app, configure, set_event_loop, store as _store_ref
+    from app import app, configure, set_event_loop, shutdown_room_workers, store as _store_ref
     configure(config, session_token=session_token)
 
     # Share stores with the MCP bridge
@@ -120,6 +127,12 @@ def main():
         # Resume any sessions that were active before restart
         if session_engine:
             session_engine.resume_active_sessions()
+
+    @app.on_event("shutdown")
+    async def on_shutdown():
+        # Keep room configuration and provider transcripts; stop only the
+        # app-owned runtime processes and temporary trust windows.
+        shutdown_room_workers()
 
     # Run web server
     import uvicorn

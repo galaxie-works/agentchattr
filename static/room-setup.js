@@ -7,11 +7,43 @@ const RoomSetup = (() => {
     const board = root.querySelector('.room-board');
     const createButton = document.getElementById('create-room-button');
     const boardButton = document.getElementById('go-to-board-button');
-    const state = { data: null, selected: [], step: 0, active: true, threads: {}, terminateActiveClaudeSessions: false, createdThisVisit: false, rooms: [], selectedRoom: null, terminateBoardClaude: false };
+    const state = { data: null, selected: [], step: 0, active: true, threads: {}, terminateActiveClaudeSessions: false, createdThisVisit: false, rooms: [], selectedRoom: null, terminateBoardClaude: false, setupPreflight: null, boardPreflight: null };
 
     const escape = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
     })[c]);
+
+    function preflightWarning(items) {
+        const rows = (items || []).map(item => {
+            const command = [item.command, ...(item.full_control_args || [])].join(' ');
+            return `<li><strong>${escape(item.label)}</strong><small>${escape(item.cwd)}</small><code>${escape(command)}</code></li>`;
+        }).join('');
+        return `<div class="room-preflight-warning"><strong>Workspace trust and full control required</strong><p>Continue to open a visible CLI for each provider. Confirm that you trust the directory. The command shown below disables that provider’s approval/sandbox prompts; AgentChattr will close the bootstrap window and resume automatically.</p><ul>${rows}</ul></div>`;
+    }
+
+    async function runProviderPreflight(startUrl, body, error, onReady) {
+        error.innerHTML = '<span>Opening visible provider trust windows…</span>';
+        const response = await fetch(startUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
+            body: body ? JSON.stringify(body) : '{}',
+        });
+        let payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not start provider preflight.');
+        if (payload.status === 'ready' && !payload.id) { await onReady(); return; }
+        error.innerHTML = '<span>Confirm workspace trust in the visible CLI window. Waiting…</span>';
+        while (payload.status === 'starting' || payload.status === 'waiting') {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const statusResponse = await fetch(`/api/provider-preflight/${encodeURIComponent(payload.id)}`, {
+                headers: { 'X-Session-Token': SESSION_TOKEN },
+            });
+            payload = await statusResponse.json();
+            if (!statusResponse.ok) throw new Error(payload.error || 'Provider preflight could not be read.');
+        }
+        if (payload.status !== 'ready') throw new Error(payload.error || 'Provider preflight failed.');
+        error.innerHTML = '<span>Workspace trust confirmed. Resuming…</span>';
+        await onReady();
+    }
 
     async function load() {
         const response = await fetch('/api/room-setup', { headers: { 'X-Session-Token': SESSION_TOKEN } });
@@ -57,8 +89,9 @@ const RoomSetup = (() => {
         const selected = state.selectedRoom;
         const rooms = state.rooms.map(room => `<button type="button" class="room-history-item ${selected?.id === room.id ? 'selected' : ''}" data-room-id="${escape(room.id)}"><strong>${escape(room.title)}</strong><small>${escape(room.member_count)} colleagues · ${escape(room.last_activity || 'saved room')}</small></button>`).join('') || '<small>No saved rooms yet.</small>';
         const members = selected?.members?.length ? selected.members.map(escape).join(', ') : 'No configured colleagues';
-        board.innerHTML = `<div class="room-board-layout"><aside class="room-board-sidebar"><h3>Chat history</h3>${rooms}<button class="room-secondary-button" id="board-back">Back</button></aside><div class="room-board-detail">${selected ? `<h2>${escape(selected.title)}</h2><p>${escape(selected.description || 'No description')}</p><div class="room-board-members">${members}</div><div class="room-board-actions"><button class="room-primary-button" id="continue-room">${state.terminateBoardClaude ? 'Close session and continue' : 'Continue room'}</button><span class="room-board-error" id="board-error"></span></div>` : '<h2>Select a room</h2>'}</div></div>`;
-        board.querySelectorAll('[data-room-id]').forEach(button => button.addEventListener('click', () => { state.selectedRoom = state.rooms.find(room => room.id === button.dataset.roomId); state.terminateBoardClaude = false; renderBoard(); }));
+        const continueLabel = state.boardPreflight ? 'Open trust windows and continue' : (state.terminateBoardClaude ? 'Close session and continue' : 'Continue room');
+        board.innerHTML = `<div class="room-board-layout"><aside class="room-board-sidebar"><h3>Chat history</h3>${rooms}<button class="room-secondary-button" id="board-back">Back</button></aside><div class="room-board-detail">${selected ? `<h2>${escape(selected.title)}</h2><p>${escape(selected.description || 'No description')}</p><div class="room-board-members">${members}</div><div class="room-board-actions"><button class="room-primary-button" id="continue-room">${continueLabel}</button><span class="room-board-error" id="board-error">${state.boardPreflight ? preflightWarning(state.boardPreflight) : ''}</span></div>` : '<h2>Select a room</h2>'}</div></div>`;
+        board.querySelectorAll('[data-room-id]').forEach(button => button.addEventListener('click', () => { state.selectedRoom = state.rooms.find(room => room.id === button.dataset.roomId); state.terminateBoardClaude = false; state.boardPreflight = null; renderBoard(); }));
         board.querySelector('#board-back')?.addEventListener('click', () => { board.classList.add('hidden'); landing.classList.remove('hidden'); });
         board.querySelector('#continue-room')?.addEventListener('click', continueRoom);
     }
@@ -67,8 +100,23 @@ const RoomSetup = (() => {
         const button = board.querySelector('#continue-room'); const error = board.querySelector('#board-error');
         button.disabled = true; error.textContent = 'Waking up colleagues…';
         try {
+            if (state.boardPreflight) {
+                await runProviderPreflight('/api/provider-preflight/room', null, error, async () => {
+                    state.boardPreflight = null;
+                    button.disabled = false;
+                    await continueRoom();
+                });
+                return;
+            }
             const response = await fetch(`/api/rooms/${encodeURIComponent(state.selectedRoom.id)}/continue`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN }, body: JSON.stringify({ terminate_active_claude_sessions: state.terminateBoardClaude }) });
             const payload = await response.json();
+            if (payload.requires_provider_preflight) {
+                state.boardPreflight = payload.provider_preflight || [];
+                error.innerHTML = preflightWarning(state.boardPreflight);
+                button.textContent = 'Open trust windows and continue';
+                button.disabled = false;
+                return;
+            }
             if (payload.requires_session_termination) { state.terminateBoardClaude = true; error.textContent = 'A Claude session is open. Continue again to close it and wake the room.'; button.textContent = 'Close session and continue'; button.disabled = false; return; }
             if (!response.ok) throw new Error(payload.error || 'Could not continue room.');
             state.createdThisVisit = true; root.classList.remove('active'); root.classList.add('hidden');
@@ -244,11 +292,27 @@ const RoomSetup = (() => {
         button.disabled = true;
         error.textContent = 'Creating room…';
         try {
+            if (state.setupPreflight) {
+                const setupBody = { title: state.title, description: state.description, agents: state.selected, terminate_active_claude_sessions: state.terminateActiveClaudeSessions };
+                await runProviderPreflight('/api/provider-preflight/setup', setupBody, error, async () => {
+                    state.setupPreflight = null;
+                    button.disabled = false;
+                    await submit();
+                });
+                return;
+            }
             const response = await fetch('/api/room-setup', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': SESSION_TOKEN },
                 body: JSON.stringify({ title: state.title, description: state.description, agents: state.selected, terminate_active_claude_sessions: state.terminateActiveClaudeSessions }),
             });
             const payload = await response.json();
+            if (payload.requires_provider_preflight) {
+                state.setupPreflight = payload.provider_preflight || [];
+                error.innerHTML = preflightWarning(state.setupPreflight);
+                button.textContent = 'Open trust windows and create room';
+                button.disabled = false;
+                return;
+            }
             if (payload.requires_session_termination) {
                 state.terminateActiveClaudeSessions = true;
                 const count = Array.isArray(payload.sessions) ? payload.sessions.length : 1;
@@ -266,10 +330,11 @@ const RoomSetup = (() => {
     }
 
     function bind() {
-        wizard.querySelectorAll('[data-agent-name]').forEach(input => input.addEventListener('change', () => { state.terminateActiveClaudeSessions = false; updateInvite(); render(); }));
+        wizard.querySelectorAll('[data-agent-name]').forEach(input => input.addEventListener('change', () => { state.terminateActiveClaudeSessions = false; state.setupPreflight = null; updateInvite(); render(); }));
         wizard.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
             const stage = currentStage();
             state.terminateActiveClaudeSessions = false;
+            state.setupPreflight = null;
             stage.member.mode = button.dataset.mode;
             state.step += 1;
             render();
@@ -277,6 +342,7 @@ const RoomSetup = (() => {
         wizard.querySelectorAll('[data-thread-index]').forEach(button => button.addEventListener('click', () => {
             const stage = currentStage();
             state.terminateActiveClaudeSessions = false;
+            state.setupPreflight = null;
             const thread = state.threads[stage.member.provider][Number(button.dataset.threadIndex)];
             stage.member.target = thread.id;
             stage.member.cwd = thread.cwd || stage.member.cwd || '';

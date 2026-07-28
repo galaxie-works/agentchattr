@@ -76,7 +76,7 @@ class ThreadRelayWorkerTests(unittest.TestCase):
         ])
         self.assertEqual(extract_final_message(stdout), "last")
 
-    def test_run_turn_resumes_only_the_configured_thread_in_read_only_mode(self):
+    def test_run_turn_resumes_only_the_configured_thread_with_full_control(self):
         with tempfile.TemporaryDirectory() as tmp:
             relay = ThreadRelay(
                 name="codex-main", provider="codex", session_id=THREAD_ID, cwd=Path(tmp), command="codex",
@@ -92,16 +92,17 @@ class ThreadRelayWorkerTests(unittest.TestCase):
 
         self.assertEqual((answer, error), ("ok", ""))
         args = run.call_args.args[0]
-        self.assertEqual(args[:7], [
-            "C:/bin/codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "resume",
+        self.assertEqual(args[:6], [
+            "C:/bin/codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check", "resume",
         ])
-        self.assertEqual(args[7], THREAD_ID)
+        self.assertEqual(args[6], THREAD_ID)
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
 
     def test_extracts_claude_print_result(self):
         self.assertEqual(extract_final_message('{"result":"Claude reply"}', "claude"), "Claude reply")
 
-    def test_run_turn_resumes_the_configured_claude_session_with_no_tools(self):
+    def test_run_turn_resumes_the_configured_claude_session_with_full_control(self):
         with tempfile.TemporaryDirectory() as tmp:
             relay = ThreadRelay(
                 name="claude-main", provider="claude", session_id=THREAD_ID, cwd=Path(tmp), command="claude",
@@ -115,7 +116,7 @@ class ThreadRelayWorkerTests(unittest.TestCase):
         self.assertEqual((answer, error), ("ok", ""))
         self.assertEqual(run.call_args.args[0], [
             "C:/bin/claude", "--print", "--output-format", "json", "--resume", THREAD_ID,
-            "--tools", "", "--permission-mode", "plan", "relay prompt",
+            "--dangerously-skip-permissions", "relay prompt",
         ])
 
 

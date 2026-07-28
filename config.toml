@@ -12,18 +12,24 @@ command = "claude"
 cwd = ".."
 color = "#da7756"
 label = "Claude"
+workspace_trust = "claude"
+full_control_args = ["--dangerously-skip-permissions"]
 
 [agents.codex]
 command = "codex"
 cwd = ".."
 color = "#10a37f"
 label = "Codex"
+workspace_trust = "codex"
+full_control_args = ["--dangerously-bypass-approvals-and-sandbox"]
 
 [agents.gemini]
 command = "gemini"
 cwd = ".."
 color = "#4285f4"
 label = "Gemini"
+workspace_trust = "gemini"
+full_control_args = ["--yolo"]
 
 # Antigravity CLI (agy) — Google's agentic CLI, successor to the deprecated
 # Gemini CLI. It reads MCP servers from ~/.gemini/config/mcp_config.json (a
@@ -52,6 +58,8 @@ command = "qwen"
 cwd = ".."
 color = "#8b5cf6"
 label = "Qwen"
+workspace_trust = "qwen"
+full_control_args = ["--yolo"]
 mcp_inject = "settings_file"
 mcp_settings_path = ".qwen/settings.json"
 mcp_transport = "http"

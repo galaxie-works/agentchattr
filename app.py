@@ -30,9 +30,17 @@ from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
 from claude_sessions import (
     active_sessions,
-    reconcile_workspace_trust,
+    resume_target,
     room_resume_args,
     terminate_sessions,
+)
+from provider_preflight import (
+    ProviderPreflightSession,
+    ProviderPreflightTarget,
+    full_control_args,
+    pending_trust,
+    preflight_blockers,
+    trust_kind,
 )
 
 log = logging.getLogger(__name__)
@@ -77,10 +85,84 @@ MAX_CHANNELS = 8
 # Agent hats (persisted to data/hats.json)
 agent_hats: dict[str, str] = {}  # { agent_name: svg_string }
 room_workers: dict[str, subprocess.Popen] = {}
+managed_room_workers: set[tuple[str, str]] = set()
+provider_preflight_sessions: dict[str, ProviderPreflightSession] = {}
+
+
+def _resolved_agent_cwd(raw_cwd: str | Path) -> Path:
+    cwd = Path(raw_cwd).expanduser()
+    return cwd.resolve() if cwd.is_absolute() else (Path(__file__).parent / cwd).resolve()
+
+
+def _room_plan_preflight_targets(plan) -> list[ProviderPreflightTarget]:
+    targets = []
+    for launch in plan.launches:
+        if launch.kind == "thread_relay":
+            agent_cfg = plan.thread_relays.get(
+                launch.agent,
+                config.get("thread_relays", {}).get(launch.agent, {}),
+            )
+        else:
+            agent_cfg = plan.room_agents.get(
+                launch.agent,
+                config.get("agents", {}).get(launch.agent, {}),
+            )
+        provider = str(agent_cfg.get("provider", launch.agent)).strip().lower()
+        interactive = launch.kind != "api" and agent_cfg.get("type") != "api"
+        targets.append(ProviderPreflightTarget(
+            provider=provider,
+            label=str(agent_cfg.get("label", provider.title())),
+            command=str(agent_cfg.get("command", provider)),
+            cwd=_resolved_agent_cwd(agent_cfg.get("cwd", ".")),
+            full_control=full_control_args(provider, agent_cfg) if interactive else (),
+            trust=trust_kind(provider, agent_cfg) if interactive else None,
+            interactive=interactive,
+        ))
+    return targets
+
+
+def _saved_room_preflight_targets() -> list[ProviderPreflightTarget]:
+    targets = []
+    for member in _current_room_members():
+        provider = member["provider"]
+        alias = member["agent"]
+        if member["mode"] == "custom" and provider == "codex":
+            agent_cfg = config.get("thread_relays", {}).get(alias, {})
+        else:
+            agent_cfg = config.get("agents", {}).get(alias, {})
+        targets.append(ProviderPreflightTarget(
+            provider=provider,
+            label=str(agent_cfg.get("label", provider.title())),
+            command=str(agent_cfg.get("command", provider)),
+            cwd=_resolved_agent_cwd(member["cwd"]),
+            full_control=full_control_args(provider, agent_cfg),
+            trust=trust_kind(provider, agent_cfg),
+        ))
+    return targets
+
+
+def _preflight_response(targets: list[ProviderPreflightTarget]) -> JSONResponse | None:
+    blockers = preflight_blockers(targets)
+    if blockers:
+        return JSONResponse({
+            "error": " ".join(blockers),
+            "provider_preflight": [target.public() for target in targets],
+        }, status_code=400)
+    pending = pending_trust(targets)
+    if pending:
+        return JSONResponse({
+            "error": "Workspace trust is required before these colleagues can start.",
+            "requires_provider_preflight": True,
+            "provider_preflight": [target.public() for target in pending],
+        }, status_code=409)
+    return None
 
 
 def _worker_command_matches(command: str, kind: str, agent: str) -> bool:
-    script = "thread_relay.py" if kind == "thread_relay" else "wrapper.py"
+    script = {
+        "thread_relay": "thread_relay.py",
+        "api": "wrapper_api.py",
+    }.get(kind, "wrapper.py")
     pattern = (
         rf'(?:^|[\\/\s"\']){_re.escape(script)}["\']?\s+'
         rf'["\']?{_re.escape(agent)}["\']?(?=\s|$)'
@@ -169,6 +251,49 @@ def _terminate_worker_tree(pid: int) -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+
+
+def shutdown_room_workers() -> None:
+    """Stop transient provider windows and every room worker owned by this app."""
+    for session in list(provider_preflight_sessions.values()):
+        try:
+            session.close()
+        except Exception:
+            log.exception("Could not close provider preflight %s", session.id)
+    provider_preflight_sessions.clear()
+
+    specs = set(managed_room_workers)
+    for agent in room_workers:
+        kind = "thread_relay" if agent in config.get("thread_relays", {}) else "wrapper"
+        if config.get("agents", {}).get(agent, {}).get("type") == "api":
+            kind = "api"
+        specs.add((kind, agent))
+
+    terminated: set[int] = set()
+    for kind, agent in specs:
+        process = room_workers.get(agent)
+        if process and process.poll() is None:
+            try:
+                _terminate_worker_tree(process.pid)
+                terminated.add(process.pid)
+            except (OSError, subprocess.SubprocessError):
+                log.exception("Could not terminate tracked room worker %s", agent)
+        for root in _room_worker_roots(kind, agent):
+            pid = int(root["pid"])
+            if pid in terminated:
+                continue
+            try:
+                _terminate_worker_tree(pid)
+                terminated.add(pid)
+            except (OSError, subprocess.SubprocessError):
+                log.exception("Could not terminate adopted room worker %s (%s)", agent, pid)
+
+        if registry:
+            for instance in registry.get_instances_for(agent):
+                registry.deregister(instance["name"], reclaimable=False)
+
+    room_workers.clear()
+    managed_room_workers.clear()
 
 
 def _reconcile_room_worker(kind: str, agent: str) -> bool:
@@ -349,6 +474,7 @@ def _load_json_entries(path: Path, key: str) -> dict:
 
 def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) -> None:
     """Start exactly one local worker selected by the room wizard."""
+    managed_room_workers.add((kind, agent))
     existing = room_workers.get(agent)
     if existing and existing.poll() is None:
         return
@@ -356,10 +482,12 @@ def _start_room_worker(kind: str, agent: str, extra_args: tuple[str, ...] = ()) 
         return
 
     root = Path(__file__).parent
-    if kind == "thread_relay":
-        command = [sys.executable, "-u", "thread_relay.py", agent]
-        stdout_path = _settings_path().parent / f"{agent}-relay.stdout.log"
-        stderr_path = _settings_path().parent / f"{agent}-relay.stderr.log"
+    if kind in {"thread_relay", "api"}:
+        script = "thread_relay.py" if kind == "thread_relay" else "wrapper_api.py"
+        suffix = "relay" if kind == "thread_relay" else "api"
+        command = [sys.executable, "-u", script, agent, *extra_args]
+        stdout_path = _settings_path().parent / f"{agent}-{suffix}.stdout.log"
+        stderr_path = _settings_path().parent / f"{agent}-{suffix}.stderr.log"
         with open(stdout_path, "a", encoding="utf-8") as stdout, open(stderr_path, "a", encoding="utf-8") as stderr:
             room_workers[agent] = subprocess.Popen(
                 command, cwd=root, stdout=stdout, stderr=stderr,
@@ -1874,13 +2002,40 @@ async def get_room_setup():
 
 
 def _current_room_members() -> list[dict]:
+    saved = room_settings.get("room_members")
+    if isinstance(saved, list):
+        members = []
+        for raw in saved:
+            if not isinstance(raw, dict):
+                continue
+            provider = str(raw.get("provider", "")).strip().lower()
+            mode = str(raw.get("mode", "standard")).strip().lower()
+            if not provider or mode not in {"standard", "custom"}:
+                continue
+            members.append({
+                "provider": provider,
+                "mode": mode,
+                "agent": str(raw.get("agent", f"{provider}-room" if mode == "custom" else provider)),
+                "id": str(raw.get("id", "")),
+                "cwd": str(raw.get("cwd", "")),
+            })
+        return members
+
+    # Backward compatibility for rooms saved before standard colleagues were
+    # persisted explicitly.
     members = []
     for linked in room_settings.get("linked_threads", []):
         if not isinstance(linked, dict):
             continue
         provider = str(linked.get("provider", "")).lower()
         if provider in {"claude", "codex"}:
-            members.append({"provider": provider, "id": str(linked.get("id", "")), "cwd": str(linked.get("cwd", ""))})
+            members.append({
+                "provider": provider,
+                "mode": "custom",
+                "agent": f"{provider}-room",
+                "id": str(linked.get("id", "")),
+                "cwd": str(linked.get("cwd", "")),
+            })
     return members
 
 
@@ -1901,6 +2056,67 @@ async def get_rooms():
     }])
 
 
+@app.post("/api/provider-preflight/room")
+async def start_saved_room_provider_preflight():
+    """Open visible trust prompts for the saved room and monitor completion."""
+    targets = _saved_room_preflight_targets()
+    blockers = preflight_blockers(targets)
+    if blockers:
+        return JSONResponse({"error": " ".join(blockers)}, status_code=400)
+    pending = pending_trust(targets)
+    if not pending:
+        return JSONResponse({"ok": True, "status": "ready"})
+    session = ProviderPreflightSession(pending)
+    provider_preflight_sessions[session.id] = session
+    session.start()
+    return JSONResponse(session.public())
+
+
+@app.post("/api/provider-preflight/setup")
+async def start_setup_provider_preflight(request: Request):
+    """Open visible trust prompts for a pending room-creation payload."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    from room_setup import RoomSetupError, build_room_plan
+    try:
+        plan = build_room_plan(config, body, Path(__file__).parent)
+    except RoomSetupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    targets = _room_plan_preflight_targets(plan)
+    blockers = preflight_blockers(targets)
+    if blockers:
+        return JSONResponse({"error": " ".join(blockers)}, status_code=400)
+    pending = pending_trust(targets)
+    if not pending:
+        return JSONResponse({"ok": True, "status": "ready"})
+    session = ProviderPreflightSession(pending)
+    provider_preflight_sessions[session.id] = session
+    session.start()
+    return JSONResponse(session.public())
+
+
+@app.get("/api/provider-preflight/{preflight_id}")
+async def get_provider_preflight(preflight_id: str):
+    session = provider_preflight_sessions.get(preflight_id)
+    if not session:
+        return JSONResponse({"error": "Provider preflight was not found or expired."}, status_code=404)
+    payload = session.public()
+    if payload["status"] in {"ready", "failed"}:
+        provider_preflight_sessions.pop(preflight_id, None)
+    return JSONResponse(payload)
+
+
+@app.post("/api/provider-preflight/{preflight_id}/cancel")
+async def cancel_provider_preflight(preflight_id: str):
+    session = provider_preflight_sessions.pop(preflight_id, None)
+    if not session:
+        return JSONResponse({"error": "Provider preflight was not found or expired."}, status_code=404)
+    session.close()
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/rooms/{room_id}/continue")
 async def continue_room(room_id: str, request: Request):
     """Wake this saved room's configured workers and report unavailable members."""
@@ -1911,20 +2127,13 @@ async def continue_room(room_id: str, request: Request):
     except Exception:
         body = {}
     members = _current_room_members()
-    untrusted_claude = [
-        member["cwd"] for member in members
-        if member["provider"] == "claude"
-        and not reconcile_workspace_trust(member["cwd"])
-    ]
-    if untrusted_claude:
-        return JSONResponse({
-            "error": (
-                "Claude has not trusted this working directory. Open Claude Code once in "
-                f"{untrusted_claude[0]}, accept workspace trust, then continue the room again."
-            ),
-            "requires_workspace_trust": True,
-        }, status_code=409)
-    active_targets = {member["id"] for member in members if member["provider"] == "claude"} & set(active_sessions())
+    preflight = _preflight_response(_saved_room_preflight_targets())
+    if preflight:
+        return preflight
+    active_targets = {
+        member["id"] for member in members
+        if member["provider"] == "claude" and member["mode"] == "custom"
+    } & set(active_sessions())
     if active_targets:
         if body.get("terminate_active_claude_sessions") is not True:
             return JSONResponse({"error": "A selected Claude session is still open.", "requires_session_termination": True}, status_code=409)
@@ -1934,15 +2143,22 @@ async def continue_room(room_id: str, request: Request):
     started, unavailable = [], []
     for member in members:
         provider, cwd = member["provider"], Path(member["cwd"])
-        alias = f"{provider}-room"
+        alias = member["agent"]
         if not cwd.is_dir():
             unavailable.append(provider)
             continue
         try:
-            if provider == "codex" and alias in config.get("thread_relays", {}):
+            if member["mode"] == "custom" and provider == "codex" and alias in config.get("thread_relays", {}):
                 _start_room_worker("thread_relay", alias)
-            elif provider == "claude" and alias in config.get("agents", {}):
-                _start_room_worker("wrapper", alias, room_resume_args(member["id"]))
+            elif member["mode"] == "custom" and provider == "claude" and alias in config.get("agents", {}):
+                agent_cfg = config.get("agents", {}).get(alias, {})
+                args = (*(full_control_args(provider, agent_cfg) or ()), *room_resume_args(member["id"]))
+                _start_room_worker("wrapper", alias, args)
+            elif member["mode"] == "standard" and alias in config.get("agents", {}):
+                agent_cfg = config.get("agents", {}).get(alias, {})
+                kind = "api" if agent_cfg.get("type") == "api" else "wrapper"
+                args = () if kind == "api" else (full_control_args(provider, agent_cfg) or ())
+                _start_room_worker(kind, alias, args)
             else:
                 unavailable.append(provider)
                 continue
@@ -1968,28 +2184,16 @@ async def create_room(request: Request):
     except RoomSetupError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    untrusted_claude = []
-    for launch in plan.launches:
-        if launch.kind != "wrapper":
-            continue
-        agent_cfg = plan.room_agents.get(launch.agent, config.get("agents", {}).get(launch.agent, {}))
-        provider = str(agent_cfg.get("provider", launch.agent)).strip().lower()
-        cwd = str(agent_cfg.get("cwd", "."))
-        if provider == "claude" and not reconcile_workspace_trust(cwd):
-            untrusted_claude.append(cwd)
-    if untrusted_claude:
-        return JSONResponse({
-            "error": (
-                "Claude has not trusted this working directory. Open Claude Code once in "
-                f"{untrusted_claude[0]}, accept workspace trust, then create the room again."
-            ),
-            "requires_workspace_trust": True,
-        }, status_code=409)
+    preflight = _preflight_response(_room_plan_preflight_targets(plan))
+    if preflight:
+        return preflight
 
     claude_resume_targets = {
-        launch.extra_args[1]
+        target
         for launch in plan.launches
-        if launch.kind == "wrapper" and launch.extra_args[:1] == ("--resume",) and len(launch.extra_args) > 1
+        if launch.kind == "wrapper"
+        for target in [resume_target(list(launch.extra_args))]
+        if target
     }
     live_claude_sessions = active_sessions()
     active_claude_targets = claude_resume_targets & set(live_claude_sessions)
@@ -2043,6 +2247,30 @@ async def create_room(request: Request):
         for member in body.get("agents", [])
         if isinstance(member, dict) and member.get("mode") == "custom"
     ]
+    room_settings["room_members"] = []
+    for member in body.get("agents", []):
+        if not isinstance(member, dict):
+            continue
+        provider = str(member.get("name", "")).strip().lower()
+        mode = str(member.get("mode", "standard")).strip().lower()
+        if not provider:
+            continue
+        if mode == "custom":
+            cwd = str(member.get("cwd", ""))
+            target = str(member.get("target", ""))
+            agent = f"{provider}-room"
+        else:
+            agent_cfg = config.get("agents", {}).get(provider, {})
+            cwd = str(_resolved_agent_cwd(agent_cfg.get("cwd", ".")))
+            target = ""
+            agent = provider
+        room_settings["room_members"].append({
+            "provider": provider,
+            "mode": mode,
+            "agent": agent,
+            "id": target,
+            "cwd": cwd,
+        })
     room_settings["setup_complete"] = True
     _save_settings()
     await broadcast_settings()
