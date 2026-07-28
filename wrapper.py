@@ -603,7 +603,7 @@ def main():
             return
 
     if provider == "claude":
-        from claude_sessions import active_session_ids, resume_target
+        from claude_sessions import active_session_ids, reconcile_workspace_trust, resume_target
 
         target = resume_target(extra)
         if target and target in active_session_ids():
@@ -611,6 +611,10 @@ def main():
             print("  Close that session before resuming it through AgentChattr.")
             sys.exit(2)
     cwd = agent_cfg.get("cwd", ".")
+    if provider == "claude" and not reconcile_workspace_trust(cwd):
+        print(f"  Error: Claude has not trusted the workspace {cwd}.")
+        print("  Open Claude Code in that directory once, accept workspace trust, then retry.")
+        sys.exit(3)
     command = agent_cfg.get("command", agent)
     server_port = config.get("server", {}).get("port", 8300)
     mcp_cfg = config.get("mcp", {})

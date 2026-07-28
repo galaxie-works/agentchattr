@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from claude_sessions import room_resume_args
 from thread_relays import validate_target
 
 
@@ -134,6 +135,6 @@ def build_room_plan(config: dict, payload: Any, root: Path) -> RoomPlan:
                 "color": base["color"],
             })
             room_agents[alias] = cfg
-            launches.append(LaunchSpec("wrapper", alias, ("--resume", target)))
+            launches.append(LaunchSpec("wrapper", alias, room_resume_args(target)))
 
     return RoomPlan(title, description, room_agents, thread_relays, tuple(launches))

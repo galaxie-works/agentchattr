@@ -1,5 +1,6 @@
 """Tests for the room-wizard execution plan."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from claude_sessions import active_session_ids, active_sessions, resume_target, _termination_root
+from claude_sessions import (
+    CLAUDE_ROOM_RESUME_PROMPT,
+    _termination_root,
+    active_session_ids,
+    active_sessions,
+    reconcile_workspace_trust,
+    resume_target,
+    room_resume_args,
+)
 from room_setup import RoomSetupError, available_agents, build_room_plan
 
 
@@ -48,7 +57,7 @@ class RoomSetupPlanTests(unittest.TestCase):
         self.assertTrue(plan.thread_relays["codex-room"]["singleton"])
         self.assertEqual(plan.room_agents["claude-room"]["cwd"], str(root.resolve()))
         self.assertTrue(plan.room_agents["claude-room"]["singleton"])
-        self.assertIn(("wrapper", "claude-room", ("--resume", CLAUDE_ID)), [
+        self.assertIn(("wrapper", "claude-room", room_resume_args(CLAUDE_ID)), [
             (item.kind, item.agent, item.extra_args) for item in plan.launches
         ])
 
@@ -89,9 +98,43 @@ class RoomSetupPlanTests(unittest.TestCase):
         self.assertEqual(_termination_root(400, processes.get), 300)
 
     def test_extracts_claude_resume_target_from_wrapper_arguments(self):
-        self.assertEqual(resume_target(["--resume", CLAUDE_ID]), CLAUDE_ID)
+        self.assertEqual(resume_target(list(room_resume_args(CLAUDE_ID))), CLAUDE_ID)
         self.assertEqual(resume_target([f"--resume={CLAUDE_ID}"]), CLAUDE_ID)
         self.assertIsNone(resume_target(["--no-restart"]))
+
+    def test_claude_room_resume_includes_a_non_empty_bootstrap_prompt(self):
+        self.assertEqual(room_resume_args(CLAUDE_ID)[:2], ("--resume", CLAUDE_ID))
+        self.assertEqual(room_resume_args(CLAUDE_ID)[2], CLAUDE_ROOM_RESUME_PROMPT)
+        self.assertTrue(CLAUDE_ROOM_RESUME_PROMPT.strip())
+
+    def test_repairs_conflicting_slash_variant_workspace_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / ".claude.json"
+            backslash = str(root).replace("/", "\\")
+            forward = str(root).replace("\\", "/")
+            config_path.write_text(json.dumps({
+                "projects": {
+                    backslash: {"hasTrustDialogAccepted": True},
+                    forward: {"hasTrustDialogAccepted": False},
+                }
+            }), "utf-8")
+
+            self.assertTrue(reconcile_workspace_trust(root, config_path))
+            projects = json.loads(config_path.read_text("utf-8"))["projects"]
+            self.assertTrue(all(item["hasTrustDialogAccepted"] for item in projects.values()))
+
+    def test_does_not_auto_trust_a_new_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / ".claude.json"
+            config_path.write_text(json.dumps({
+                "projects": {str(root): {"hasTrustDialogAccepted": False}}
+            }), "utf-8")
+
+            self.assertFalse(reconcile_workspace_trust(root, config_path))
+            payload = json.loads(config_path.read_text("utf-8"))
+            self.assertFalse(payload["projects"][str(root)]["hasTrustDialogAccepted"])
 
 
 if __name__ == "__main__":

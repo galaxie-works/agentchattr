@@ -5,10 +5,76 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+CLAUDE_ROOM_RESUME_PROMPT = (
+    "Resume this conversation for AgentChattr relay operation. "
+    "Remain idle until a room message is injected; do not send a response yet."
+)
+
+
+def room_resume_args(session_id: str) -> tuple[str, ...]:
+    """Resume a completed session with the non-empty prompt Claude now requires."""
+    return "--resume", session_id, CLAUDE_ROOM_RESUME_PROMPT
+
+
+def _normalized_workspace(path: str | Path) -> str:
+    expanded = Path(path).expanduser().resolve()
+    return str(expanded).replace("\\", "/").rstrip("/").casefold()
+
+
+def reconcile_workspace_trust(cwd: str | Path, config_path: Path | None = None) -> bool:
+    """Repair slash-variant trust records, without trusting a new workspace.
+
+    Claude may record the same Windows directory once with backslashes and once
+    with forward slashes. If the user trusted either equivalent record, mirror
+    that decision to the other existing aliases. A completely untrusted
+    workspace still requires explicit approval in a visible Claude session.
+    """
+    path = config_path or (Path.home() / ".claude.json")
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+        projects = payload.get("projects", {})
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(projects, dict):
+        return False
+
+    target = _normalized_workspace(cwd)
+    matching = [
+        cfg for project, cfg in projects.items()
+        if isinstance(project, str)
+        and isinstance(cfg, dict)
+        and _normalized_workspace(project) == target
+    ]
+    if not matching or not any(cfg.get("hasTrustDialogAccepted") is True for cfg in matching):
+        return False
+
+    changed = False
+    for cfg in matching:
+        if cfg.get("hasTrustDialogAccepted") is not True:
+            cfg["hasTrustDialogAccepted"] = True
+            changed = True
+    if changed:
+        backup = path.with_name(f"{path.name}.agentchattr-backup")
+        temporary = path.with_name(f"{path.name}.agentchattr.tmp")
+        try:
+            if not backup.exists():
+                shutil.copy2(path, backup)
+            temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", "utf-8")
+            temporary.replace(path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+    return True
 
 
 def pid_is_running(pid: int) -> bool:

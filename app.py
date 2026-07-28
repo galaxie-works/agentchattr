@@ -28,7 +28,12 @@ from registry import RuntimeRegistry
 from relay import RelayRoutes
 from session_store import SessionStore, validate_session_template
 from session_engine import SessionEngine
-from claude_sessions import active_sessions, terminate_sessions
+from claude_sessions import (
+    active_sessions,
+    reconcile_workspace_trust,
+    room_resume_args,
+    terminate_sessions,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1906,6 +1911,19 @@ async def continue_room(room_id: str, request: Request):
     except Exception:
         body = {}
     members = _current_room_members()
+    untrusted_claude = [
+        member["cwd"] for member in members
+        if member["provider"] == "claude"
+        and not reconcile_workspace_trust(member["cwd"])
+    ]
+    if untrusted_claude:
+        return JSONResponse({
+            "error": (
+                "Claude has not trusted this working directory. Open Claude Code once in "
+                f"{untrusted_claude[0]}, accept workspace trust, then continue the room again."
+            ),
+            "requires_workspace_trust": True,
+        }, status_code=409)
     active_targets = {member["id"] for member in members if member["provider"] == "claude"} & set(active_sessions())
     if active_targets:
         if body.get("terminate_active_claude_sessions") is not True:
@@ -1924,7 +1942,7 @@ async def continue_room(room_id: str, request: Request):
             if provider == "codex" and alias in config.get("thread_relays", {}):
                 _start_room_worker("thread_relay", alias)
             elif provider == "claude" and alias in config.get("agents", {}):
-                _start_room_worker("wrapper", alias, ("--resume", member["id"]))
+                _start_room_worker("wrapper", alias, room_resume_args(member["id"]))
             else:
                 unavailable.append(provider)
                 continue
@@ -1949,6 +1967,24 @@ async def create_room(request: Request):
         plan = build_room_plan(config, body, Path(__file__).parent)
     except RoomSetupError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    untrusted_claude = []
+    for launch in plan.launches:
+        if launch.kind != "wrapper":
+            continue
+        agent_cfg = plan.room_agents.get(launch.agent, config.get("agents", {}).get(launch.agent, {}))
+        provider = str(agent_cfg.get("provider", launch.agent)).strip().lower()
+        cwd = str(agent_cfg.get("cwd", "."))
+        if provider == "claude" and not reconcile_workspace_trust(cwd):
+            untrusted_claude.append(cwd)
+    if untrusted_claude:
+        return JSONResponse({
+            "error": (
+                "Claude has not trusted this working directory. Open Claude Code once in "
+                f"{untrusted_claude[0]}, accept workspace trust, then create the room again."
+            ),
+            "requires_workspace_trust": True,
+        }, status_code=409)
 
     claude_resume_targets = {
         launch.extra_args[1]
